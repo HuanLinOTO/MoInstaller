@@ -18,6 +18,8 @@ pub struct BuildOptions {
     pub template: Option<PathBuf>,
     /// 输出路径；None 时输出到清单所在目录：{name}-{version}-setup.exe
     pub out: Option<PathBuf>,
+    /// 构建后执行的签名命令（{out} 占位替换为输出路径）。签名是最后一步：overlay 在 PE 证书表之后追加。
+    pub sign: Option<String>,
 }
 
 #[derive(Debug)]
@@ -154,6 +156,22 @@ pub fn build(manifest_path: &Path, opts: &BuildOptions) -> Result<BuildStats, Er
     let mut out_file = fs::File::create(&out_path)?;
     let total_output = builder.write_to(&mut out_file, &template)?;
     out_file.flush()?;
+
+    if let Some(sign_cmd) = &opts.sign {
+        let cmd_line = sign_cmd.replace("{out}", &out_path.to_string_lossy());
+        // 按 shell 方式执行（cmd /c）
+        let status = std::process::Command::new("cmd")
+            .arg("/c")
+            .arg(&cmd_line)
+            .status()
+            .map_err(Error::Io)?;
+        if !status.success() {
+            return Err(Error::Overlay(format!(
+                "签名命令失败（{}）: {cmd_line}",
+                status.code().unwrap_or(-1)
+            )));
+        }
+    }
 
     Ok(BuildStats {
         out_path,

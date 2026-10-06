@@ -185,9 +185,10 @@ impl ScriptHost {
                 return None;
             }
             if let Some(d) = *dl.lock().unwrap()
-                && Instant::now() >= d {
-                    return Some(Dynamic::from("script-timeout".to_string()));
-                }
+                && Instant::now() >= d
+            {
+                return Some(Dynamic::from("script-timeout".to_string()));
+            }
             None
         });
 
@@ -285,9 +286,10 @@ impl Subscriber for ScriptHost {
             }
             Event::DirChosen { .. } => {
                 if let Some(s) = ret.clone().try_cast::<String>()
-                    && !s.is_empty() {
-                        return Decision::Abort(format!("check_dir: {s}"));
-                    }
+                    && !s.is_empty()
+                {
+                    return Decision::Abort(format!("check_dir: {s}"));
+                }
             }
             Event::BeforeFile { .. } => {
                 if let Some(false) = ret.clone().try_cast::<bool>() {

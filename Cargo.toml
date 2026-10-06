@@ -15,6 +15,14 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/moinstaller/moinstaller"
 rust-version = "1.85"
 
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
 [workspace.dependencies]
 mo-core = { path = "crates/mo-core" }
 mo-build = { path = "crates/mo-build" }

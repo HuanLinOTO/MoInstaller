@@ -27,6 +27,9 @@ enum Cmd {
         /// 输出路径（默认输出到清单所在目录）
         #[arg(short, long)]
         out: Option<PathBuf>,
+        /// 构建后签名命令（{out} 占位替换，如 signtool sign /f c.pfx {out}）
+        #[arg(long)]
+        sign: Option<String>,
     },
 }
 
@@ -37,7 +40,15 @@ fn main() -> ExitCode {
             manifest,
             template,
             out,
-        } => match mo_build::build(&manifest, &mo_build::BuildOptions { template, out }) {
+            sign,
+        } => match mo_build::build(
+            &manifest,
+            &mo_build::BuildOptions {
+                template,
+                out,
+                sign,
+            },
+        ) {
             Ok(stats) => {
                 println!("构建完成: {}", stats.out_path.display());
                 println!(

@@ -69,6 +69,7 @@ fn e2e_silent_install_files() {
         &mo_build::BuildOptions {
             template: Some(setup_bin().into()),
             out: Some(out_exe.clone()),
+            sign: None,
         },
     )
     .unwrap_or_else(|e| panic!("build 失败: {e}"));
@@ -124,6 +125,7 @@ fn e2e_rerun_overwrites() {
         &mo_build::BuildOptions {
             template: Some(setup_bin().into()),
             out: Some(out_exe.clone()),
+            sign: None,
         },
     )
     .unwrap();
@@ -234,6 +236,7 @@ fn build_m2_setup(toml: &Path, out: &Path) {
         &mo_build::BuildOptions {
             template: Some(setup_bin().into()),
             out: Some(out.to_path_buf()),
+            sign: None,
         },
     )
     .unwrap_or_else(|e| panic!("build 失败: {e}"));
@@ -467,6 +470,7 @@ dst = "{app}"
         &mo_build::BuildOptions {
             template: Some(setup_bin().into()),
             out: Some(setup.clone()),
+            sign: None,
         },
     )
     .unwrap();
@@ -530,6 +534,7 @@ fn e2e_m4_script_skips_file_and_installs() {
         &mo_build::BuildOptions {
             template: Some(setup_bin().into()),
             out: Some(setup.clone()),
+            sign: None,
         },
     )
     .unwrap();
@@ -563,6 +568,7 @@ fn e2e_m4_script_abort_fails_with_code4() {
         &mo_build::BuildOptions {
             template: Some(setup_bin().into()),
             out: Some(setup.clone()),
+            sign: None,
         },
     )
     .unwrap();
@@ -587,6 +593,7 @@ fn e2e_m4_bad_script_rejected_at_build() {
         &mo_build::BuildOptions {
             template: Some(setup_bin().into()),
             out: Some(tmp.path().join("x.exe")),
+            sign: None,
         },
     )
     .unwrap_err();
@@ -607,6 +614,7 @@ fn on_exit(ctx, code) { ctx.log(\"done\"); }",
         &mo_build::BuildOptions {
             template: Some(setup_bin().into()),
             out: Some(setup.clone()),
+            sign: None,
         },
     )
     .unwrap();

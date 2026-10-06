@@ -28,3 +28,6 @@ features = [
 [dev-dependencies]
 mo-build = { workspace = true }
 tempfile = { workspace = true }
+
+[build-dependencies]
+winresource = "0.1"
