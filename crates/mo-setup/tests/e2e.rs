@@ -134,3 +134,290 @@ fn e2e_rerun_overwrites() {
     }
     assert!(inst_dir.join("bin").join("app.exe").is_file());
 }
+
+// ===================== M2：完整安装语义 =====================
+
+const M2_APP_NAME: &str = "MoInst E2E App";
+const M2_APP_ID: &str = "moinst.e2e.m2";
+const M2_ENV_VAR: &str = "MOINST_E2E_TEST_VAR";
+
+fn make_m2_fixture(tmp: &Path, hooks_fail: bool, tag: &str) -> std::path::PathBuf {
+    let dist = tmp.join("dist");
+    fs::create_dir_all(dist.join("bin")).unwrap();
+    fs::write(
+        dist.join("bin").join("app.exe"),
+        b"M2 fake exe payload bytes",
+    )
+    .unwrap();
+    fs::write(dist.join("settings.json"), b"{\"keep\":true}").unwrap();
+
+    let hook_section: String = if hooks_fail {
+        r#"
+[[hooks]]
+event = "after_install"
+run = "cmd"
+args = ["/c", "exit 5"]
+"#
+        .to_string()
+    } else {
+        format!(
+            r#"
+[[hooks]]
+event = "after_install"
+run = "cmd"
+args = ["/c", "echo hook-ok > %TEMP%\\mo-hook-{}.txt"]
+"#,
+            tag
+        )
+    };
+
+    let toml = format!(
+        r#"
+[app]
+id = "{M2_APP_ID}.{tag}"
+name = "{M2_APP_NAME} {tag}"
+version = "2.0.0"
+publisher = "MoInstaller Tests"
+
+[options]
+default_dir = '{{localappdata}}\\{M2_APP_NAME}'
+
+[[files]]
+src = "dist/**/*"
+dst = "{{app}}"
+
+[[registry]]
+root = "hkcu"
+key = "Software\\MoInstE2E_{tag}"
+name = "InstallPath"
+value = "{{app}}"
+value_type = "expandSZ"
+
+[[registry]]
+root = "hkcu"
+key = "Software\\MoInstE2E_{tag}"
+name = "Level"
+value = "7"
+value_type = "dword"
+
+[[env]]
+name = "{M2_ENV_VAR}_{tag}"
+op = "set"
+value = "m2-e2e-value"
+scope = "user"
+
+[[shortcuts]]
+name = "MoInst E2E App {tag}"
+target = "{{app}}/bin/app.exe"
+dest = "start-menu"
+
+[uninstall]
+keep = ["{{app}}/settings.json"]
+{hook_section}
+"#
+    );
+    let path = tmp.join("installer-m2.toml");
+    fs::write(&path, toml).unwrap();
+    path
+}
+
+/// 清理 HKCU 下指定键（测试前置：确保 prev 干净，卸载语义为彻底删除）。
+fn reg_delete_tree(key: &str) {
+    let _ = Command::new("reg")
+        .args(["delete", &format!(r"HKCU\{key}"), "/f"])
+        .status();
+}
+
+fn build_m2_setup(toml: &Path, out: &Path) {
+    mo_build::build(
+        toml,
+        &mo_build::BuildOptions {
+            template: Some(setup_bin().into()),
+            out: Some(out.to_path_buf()),
+        },
+    )
+    .unwrap_or_else(|e| panic!("build 失败: {e}"));
+}
+
+/// reg query 包装：返回值列（REG_* 之后的内容）。键/值不存在返回 None。
+fn reg_query(root: &str, key: &str, name: &str) -> Option<String> {
+    let out = Command::new("reg")
+        .args(["query", &format!("{root}\\{key}"), "/v", name])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .find(|l| l.contains("REG_"))?
+        .split_whitespace()
+        .skip(2) // 跳过名字与 REG 类型
+        .collect::<Vec<_>>()
+        .join(" ")
+        .into()
+}
+
+#[test]
+fn e2e_m2_full_install_then_uninstall() {
+    // 预清理：避免上轮失败残留干扰 prev 语义
+    reg_delete_tree(r"Software\MoInstE2E_full");
+    reg_delete_tree(&format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{M2_APP_ID}.full"
+    ));
+    let _ = Command::new("reg")
+        .args([
+            "delete",
+            r"HKCU\Environment",
+            "/v",
+            &format!("{M2_ENV_VAR}_full"),
+            "/f",
+        ])
+        .status();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let toml = make_m2_fixture(tmp.path(), false, "full");
+    let setup = tmp.path().join("m2-setup.exe");
+    build_m2_setup(&toml, &setup);
+
+    let inst_dir = tmp.path().join("目标 Dir M2");
+    let out = Command::new(&setup)
+        .arg("/VERYSILENT")
+        .arg(format!("/DIR={}", inst_dir.display()))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "安装失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 文件
+    assert!(inst_dir.join("bin").join("app.exe").is_file());
+    // 钩子副作用（%TEMP% 下的标记文件）
+    let mark_path = std::env::temp_dir().join("mo-hook-full.txt");
+    let mark = fs::read_to_string(&mark_path).unwrap_or_default();
+    assert!(mark.contains("hook-ok"), "hook 标记: {mark}");
+    let _ = std::fs::remove_file(&mark_path);
+    // 注册表（应用键）
+    assert_eq!(
+        reg_query(
+            "HKCU",
+            &format!(r"Software\MoInstE2E_{}", "full"),
+            "InstallPath"
+        ),
+        Some(inst_dir.to_string_lossy().into_owned())
+    );
+    assert_eq!(
+        reg_query("HKCU", &format!(r"Software\MoInstE2E_{}", "full"), "Level"),
+        Some("0x7".into())
+    );
+    // env（HKCU\Environment）
+    assert_eq!(
+        reg_query("HKCU", "Environment", &format!("{M2_ENV_VAR}_full")),
+        Some("m2-e2e-value".into())
+    );
+    // 快捷方式（{group} = userprograms\app name）
+    let programs = std::env::var("APPDATA").unwrap() + r"\Microsoft\Windows\Start Menu\Programs";
+    let lnk = std::path::PathBuf::from(programs)
+        .join(format!("{M2_APP_NAME} full"))
+        .join("MoInst E2E App full.lnk");
+    assert!(lnk.is_file(), "快捷方式缺失: {}", lnk.display());
+    // 卸载程序与日志
+    assert!(inst_dir.join("mo-uninstall.exe").is_file());
+    assert!(inst_dir.join("mo-install.log").is_file());
+    // Uninstall 注册表键
+    let ukey = format!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{M2_APP_ID}.full");
+    assert_eq!(
+        reg_query("HKCU", &ukey, "DisplayName"),
+        Some(format!("{M2_APP_NAME} full"))
+    );
+
+    // ---- 卸载 ----
+    let out = Command::new(inst_dir.join("mo-uninstall.exe"))
+        .arg("/VERYSILENT")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "卸载失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 等待自删（cmd timeout 1s 后 del）
+    for _ in 0..20 {
+        if !inst_dir.join("mo-uninstall.exe").exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    assert!(!inst_dir.join("mo-uninstall.exe").exists(), "自删失败");
+    assert!(!inst_dir.join("bin").join("app.exe").exists());
+    assert!(!inst_dir.join("mo-install.log").exists());
+    // keep 文件保留
+    assert!(inst_dir.join("settings.json").is_file(), "keep 文件被误删");
+    // 注册表清理
+    assert_eq!(
+        reg_query(
+            "HKCU",
+            &format!(r"Software\MoInstE2E_{}", "full"),
+            "InstallPath"
+        ),
+        None
+    );
+    assert_eq!(
+        reg_query("HKCU", "Environment", &format!("{M2_ENV_VAR}_full")),
+        None
+    );
+    assert_eq!(reg_query("HKCU", &ukey, "DisplayName"), None);
+    // 快捷方式清理
+    assert!(!lnk.exists());
+}
+
+#[test]
+fn e2e_m2_hook_failure_rolls_back() {
+    reg_delete_tree(r"Software\MoInstE2E_rb");
+    reg_delete_tree(&format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{M2_APP_ID}.rb"
+    ));
+    let _ = Command::new("reg")
+        .args([
+            "delete",
+            r"HKCU\Environment",
+            "/v",
+            &format!("{M2_ENV_VAR}_rb"),
+            "/f",
+        ])
+        .status();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let toml = make_m2_fixture(tmp.path(), true, "rb");
+    let setup = tmp.path().join("m2-setup-fail.exe");
+    build_m2_setup(&toml, &setup);
+
+    let inst_dir = tmp.path().join("rollback dir");
+    let out = Command::new(&setup)
+        .arg("/VERYSILENT")
+        .arg(format!("/DIR={}", inst_dir.display()))
+        .output()
+        .unwrap();
+
+    // 钩子失败 = 退出码 4
+    assert_eq!(out.status.code(), Some(4), "钩子失败应为退出码 4");
+    // 回滚：文件与注册表全部撤销
+    assert!(!inst_dir.join("bin").join("app.exe").exists());
+    assert_eq!(
+        reg_query(
+            "HKCU",
+            &format!(r"Software\MoInstE2E_{}", "rb"),
+            "InstallPath"
+        ),
+        None
+    );
+    assert_eq!(
+        reg_query("HKCU", "Environment", &format!("{M2_ENV_VAR}_rb")),
+        None
+    );
+    let ukey = format!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{M2_APP_ID}.rb");
+    assert_eq!(reg_query("HKCU", &ukey, "DisplayName"), None);
+    assert!(!inst_dir.join("mo-uninstall.exe").exists());
+}

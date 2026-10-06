@@ -236,8 +236,7 @@ pub enum RegRoot {
     Hklm,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum RegValueType {
     #[serde(rename = "string")]
     #[default]
@@ -247,7 +246,6 @@ pub enum RegValueType {
     #[serde(rename = "expandSZ")]
     ExpandSz,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -372,9 +370,10 @@ impl Manifest {
         // options
         self.options.compression_level()?;
         if let Some(lic) = &self.options.license
-            && lic.trim().is_empty() {
-                return invalid("options.license 不能为空".into());
-            }
+            && lic.trim().is_empty()
+        {
+            return invalid("options.license 不能为空".into());
+        }
         check_no_app_constant("options.default_dir", &self.options.default_dir)?;
 
         // theme
@@ -387,9 +386,10 @@ impl Manifest {
             }
         }
         if let Some(w) = &self.theme.window
-            && (w.width == 0 || w.height == 0) {
-                return invalid("theme.window 尺寸必须大于 0".into());
-            }
+            && (w.width == 0 || w.height == 0)
+        {
+            return invalid("theme.window 尺寸必须大于 0".into());
+        }
         check_pages("theme.pages", &self.theme.pages)?;
         check_pages("theme.hide_pages", &self.theme.hide_pages)?;
         if !self.theme.page_order.is_empty() {

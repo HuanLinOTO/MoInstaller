@@ -62,13 +62,21 @@ pub fn build(manifest_path: &Path, opts: &BuildOptions) -> Result<BuildStats, Er
         }
         for (abs, rel) in matched {
             let content = fs::read(&abs)?;
-            let attrs = fs::metadata(&abs)
+            let md = fs::metadata(&abs);
+            let attrs = md
+                .as_ref()
                 .ok()
                 .filter(|m| m.permissions().readonly())
                 .map(|_| mo_core::overlay::ATTR_READONLY)
                 .unwrap_or(0);
+            let mtime = md
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
             let inner = format!("f{i}/{rel}");
-            builder.add_file(&inner, &content, attrs)?;
+            builder.add_file(&inner, &content, attrs, mtime)?;
         }
     }
 

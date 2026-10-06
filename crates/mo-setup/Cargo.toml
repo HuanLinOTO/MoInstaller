@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 mo-core = { workspace = true }
+mo-engine = { path = "../mo-engine" }
 
 [dev-dependencies]
 mo-build = { workspace = true }

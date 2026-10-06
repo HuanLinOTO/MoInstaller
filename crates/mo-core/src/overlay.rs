@@ -25,7 +25,7 @@ use std::path::Path;
 pub const MAGIC: [u8; 4] = *b"MOIS";
 pub const FOOTER_SIZE: u64 = 32;
 /// 当前格式版本。
-pub const FMT_VER: u32 = 1;
+pub const FMT_VER: u32 = 2;
 
 /// attrs 位标志：源文件只读。
 pub const ATTR_READONLY: u32 = 0x1;
@@ -87,6 +87,8 @@ pub struct EntryMeta {
     pub orig_size: u64,
     pub crc32: u32,
     pub attrs: u32,
+    /// 源文件修改时间（unix 秒），skip-if-newer 比较用。
+    pub mtime: u64,
     /// 条目 header 在文件中的绝对偏移。
     pub data_off: u64,
     /// 压缩数据长度（header 之后）。
@@ -170,7 +172,7 @@ impl Package {
     /// 元数据已在 [Package::from_file] 阶段从数据区 header 提取并校验过，
     /// 这里直接定位到数据段读取。
     pub fn read_entry(&mut self, entry: &EntryMeta) -> Result<Vec<u8>> {
-        let header_len = 2 + entry.path.len() + 16;
+        let header_len = 2 + entry.path.len() + 24;
         self.file
             .seek(SeekFrom::Start(entry.data_off + header_len as u64))?;
         let mut data = vec![0u8; entry.data_len as usize];
@@ -257,11 +259,14 @@ fn read_entry_header(file: &mut std::fs::File, off: u64, data_len: u64) -> Resul
     let crc32 = u32::from_le_bytes(n4);
     file.read_exact(&mut n4)?;
     let attrs = u32::from_le_bytes(n4);
+    file.read_exact(&mut n8)?;
+    let mtime = u64::from_le_bytes(n8);
     Ok(EntryMeta {
         path,
         orig_size,
         crc32,
         attrs,
+        mtime,
         data_off: off,
         data_len,
     })
@@ -290,8 +295,9 @@ impl PackageBuilder {
         })
     }
 
-    /// 添加一个文件。attrs 可含 ATTR_READONLY；ATTR_STORED 由压缩设置决定。
-    pub fn add_file(&mut self, path: &str, content: &[u8], attrs: u32) -> Result<()> {
+    /// 添加一个文件。attrs 可含 ATTR_READONLY；ATTR_STORED 由压缩设置决定；
+    /// mtime 为源文件修改时间（unix 秒）。
+    pub fn add_file(&mut self, path: &str, content: &[u8], attrs: u32, mtime: u64) -> Result<()> {
         if path.is_empty() || path.starts_with('/') || path.contains('\\') {
             return Err(Error::Overlay(format!(
                 "包内路径非法: {path:?}（应为相对路径且用 '/' 分隔）"
@@ -305,12 +311,13 @@ impl PackageBuilder {
             ),
         };
         let crc = crc32fast::hash(content);
-        let mut blob = Vec::with_capacity(2 + path.len() + 20 + data.len());
+        let mut blob = Vec::with_capacity(2 + path.len() + 24 + data.len());
         blob.extend_from_slice(&(path.len() as u16).to_le_bytes());
         blob.extend_from_slice(path.as_bytes());
         blob.extend_from_slice(&(content.len() as u64).to_le_bytes());
         blob.extend_from_slice(&crc.to_le_bytes());
         blob.extend_from_slice(&attrs.to_le_bytes());
+        blob.extend_from_slice(&mtime.to_le_bytes());
         blob.extend_from_slice(&data);
         self.pending.push(PendingEntry {
             path: path.to_string(),
@@ -340,7 +347,7 @@ impl PackageBuilder {
         let mut index_raw = Vec::new();
         index_raw.extend_from_slice(&(self.pending.len() as u32).to_le_bytes());
         for p in &self.pending {
-            let header_len = 2 + p.path.len() + 16;
+            let header_len = 2 + p.path.len() + 24;
             let data_len = p.blob.len() - header_len;
             index_raw.extend_from_slice(&off.to_le_bytes()); // data_off
             index_raw.extend_from_slice(&(data_len as u64).to_le_bytes()); // data_len
@@ -403,7 +410,7 @@ dst = "{app}"
         let mut b = PackageBuilder::new(&m, compression).unwrap();
         let mut expect = Vec::new();
         for (p, c) in files {
-            b.add_file(p, c, 0).unwrap();
+            b.add_file(p, c, 0, 0).unwrap();
             expect.push((p.to_string(), c.to_vec()));
         }
         let mut out = Vec::new();
@@ -504,7 +511,7 @@ dst = "{app}"
     fn detect_entry_tamper() {
         let (mut out, _) = build_pkg(Compression::Zstd(19), &[("f0/x", &[7u8; 128])]);
         // 数据区在模板(15B)之后；篡改第一个 entry 的压缩数据
-        let idx = 15 + 2 + 4 + 16 + 3;
+        let idx = 15 + 2 + 4 + 24 + 3;
         out[idx] ^= 0xFF;
         let path = write_temp(&out);
         let mut pkg = Package::open(&path).unwrap(); // 索引与 manifest 完好
