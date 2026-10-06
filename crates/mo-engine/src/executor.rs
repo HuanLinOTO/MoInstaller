@@ -492,10 +492,16 @@ impl Executor {
 
         // 删除 install.log 自身（keep 集合中排除自己）
         let _ = std::fs::remove_file(&self.log_path);
-        // 尝试删除 {app} 目录（空才删）
-        if let Some(dir) = self.ctx.app_dir.parent() {
+        if manifest.uninstall.remove_app_dir {
+            // Inno 语义：递归删除整个 {app}（keep 除外；{app} 本身在 keep 中则不动）
+            let app_norm = norm_path(&self.ctx.app_dir.to_string_lossy());
+            let keep_root = keep.contains(&app_norm);
+            if !keep_root {
+                let _ = std::fs::remove_dir_all(&self.ctx.app_dir);
+            }
+        } else {
+            // 保守语义：仅删除已空目录
             let _ = std::fs::remove_dir(&self.ctx.app_dir);
-            let _ = dir;
         }
 
         self.bus
