@@ -80,6 +80,43 @@ pub fn build(manifest_path: &Path, opts: &BuildOptions) -> Result<BuildStats, Er
         }
     }
 
+    // 内部资源：license 与主题图片（__mo__/ 命名空间）
+    for (ref_path, inner) in [
+        manifest
+            .options
+            .license
+            .as_deref()
+            .map(|l| (l, "__mo__/license")),
+        manifest
+            .theme
+            .banner
+            .as_deref()
+            .map(|b| (b, "__mo__/theme/banner")),
+        manifest
+            .theme
+            .sidebar
+            .as_deref()
+            .map(|s| (s, "__mo__/theme/sidebar")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let p = base_dir.join(ref_path);
+        let content = fs::read(&p).map_err(|e| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("读取资源 {ref_path:?} 失败: {e}"),
+            ))
+        })?;
+        let mtime = fs::metadata(&p)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        builder.add_file(inner, &content, 0, mtime)?;
+    }
+
     let out_path = match &opts.out {
         Some(p) => p.clone(),
         None => base_dir.join(format!(

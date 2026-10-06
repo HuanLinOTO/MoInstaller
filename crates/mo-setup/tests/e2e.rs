@@ -421,3 +421,69 @@ fn e2e_m2_hook_failure_rolls_back() {
     assert_eq!(reg_query("HKCU", &ukey, "DisplayName"), None);
     assert!(!inst_dir.join("mo-uninstall.exe").exists());
 }
+
+// ===================== M3：主题/许可资源打包 =====================
+
+#[test]
+fn e2e_m3_theme_license_package() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+    fs::write(dist.join("app.exe"), b"m3 themed").unwrap();
+    fs::write(
+        tmp.path().join("LICENSE.txt"),
+        "测试许可协议\nMoInstaller E2E License\n",
+    )
+    .unwrap();
+
+    fs::write(
+        tmp.path().join("installer-m3.toml"),
+        r##"
+[app]
+id = "moinst.e2e.m3"
+name = "M3Theme"
+version = "3.0.0"
+publisher = "MoInstaller Tests"
+
+[options]
+license = "LICENSE.txt"
+default_dir = '{localappdata}\M3Theme'
+
+[theme]
+accent = "#00AA55"
+window = { width = 700, height = 500 }
+strings."wizard.btn.install" = "马上安装"
+
+[[files]]
+src = "dist/**/*"
+dst = "{app}"
+"##,
+    )
+    .unwrap();
+
+    let setup = tmp.path().join("m3-setup.exe");
+    let stats = mo_build::build(
+        &tmp.path().join("installer-m3.toml"),
+        &mo_build::BuildOptions {
+            template: Some(setup_bin().into()),
+            out: Some(setup.clone()),
+        },
+    )
+    .unwrap();
+    // dist/app.exe + __mo__/license 两个条目
+    assert_eq!(stats.file_count, 2);
+
+    // 静默安装仍然工作（license/主题页在静默模式下跳过）
+    let inst_dir = tmp.path().join("m3 dir");
+    let out = Command::new(&setup)
+        .arg("/VERYSILENT")
+        .arg(format!("/DIR={}", inst_dir.display()))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "主题包静默安装失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read(inst_dir.join("app.exe")).unwrap(), b"m3 themed");
+}

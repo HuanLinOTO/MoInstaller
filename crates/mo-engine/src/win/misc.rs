@@ -97,11 +97,14 @@ impl Drop for SingleInstance {
     }
 }
 
-/// 自删：延迟一秒后由 cmd 删除自身（卸载收尾）。
+/// 自删：延迟约一秒后由 cmd 删除自身（卸载收尾）。
+///
+/// 用 ping 而非 timeout 做延迟——timeout 在 stdin 被重定向时会立即报错退出；
+/// del 失败（exe 尚未完全退出/杀软短暂锁定）再重试一次。
 pub fn self_delete(exe: &Path) {
+    let p = exe.to_string_lossy();
     let cmd = format!(
-        "/c timeout /t 1 /nobreak >nul & del /f /q \"{}\"",
-        exe.to_string_lossy()
+        "/c ping -n 2 127.0.0.1 >nul & del /f /q \"{p}\" || (ping -n 2 127.0.0.1 >nul & del /f /q \"{p}\")"
     );
     use std::os::windows::process::CommandExt;
     let _ = std::process::Command::new("cmd").raw_arg(cmd).spawn();

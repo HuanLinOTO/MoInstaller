@@ -1,8 +1,13 @@
 //! mo-setup：MoInstaller 安装器运行时。
 //!
-//! 双模式：默认安装（GUI 于 M3 提供，当前按静默处理）；
-//! --uninstall 为卸载模式（自身即 {app}/mo-uninstall.exe）。
+//! 模式分派：--uninstall / mo-uninstall.exe → 卸载（静默或 GUI 确认）；
+//! /SILENT /VERYSILENT → 控制台静默安装；其余 → egui 向导。
 //! 退出码：0 成功；1 致命；2 安装失败（已回滚）；3 磁盘不足；4 钩子错误。
+
+mod gui;
+mod picker;
+mod strings;
+mod theme;
 
 use mo_core::constants::ConstEnv;
 use mo_core::manifest::Manifest;
@@ -50,7 +55,6 @@ fn parse_args(argv: &[String]) -> Args {
                 {
                     a.group = Some(v.trim_matches('"').to_string());
                 }
-                // 其余 Inno 风格参数（/NORESTART /SUPPRESSMSGBOXES 等）忽略
             }
         }
     }
@@ -77,18 +81,80 @@ fn run(args: &Args) -> Result<(), EngineError> {
     let exe: PathBuf = std::env::current_exe().map_err(|e| fatal(format!("定位自身失败: {e}")))?;
     let mut pkg = Package::open(&exe).map_err(|e| fatal(format!("解析安装包: {e}")))?;
     let manifest = pkg.manifest.clone();
-    // M1/M2 无 GUI：任何模式都按静默处理（M3 引入 egui 向导）
-    let silent = true;
 
-    // 卸载模式：显式参数，或自身文件名即 mo-uninstall.exe（复制自安装器）
+    // 卸载模式：显式参数，或自身文件名即 mo-uninstall.exe
     let is_uninstaller = exe
         .file_stem()
         .map(|s| s.eq_ignore_ascii_case("mo-uninstall"))
         .unwrap_or(false);
+    let silent = args.silent || args.verysilent;
+
     if args.uninstall || is_uninstaller {
-        return uninstall_flow(&manifest, &exe, silent);
+        if silent {
+            return uninstall_flow(&manifest, &exe);
+        }
+        return run_uninstall_gui(manifest, exe);
     }
-    install_flow(&manifest, &mut pkg, &exe, args, silent)
+    if silent {
+        return install_flow(&manifest, &mut pkg, &exe, args);
+    }
+    install_gui_flow(manifest, pkg, exe, args)
+}
+
+fn install_gui_flow(
+    manifest: Manifest,
+    mut pkg: Package,
+    exe: PathBuf,
+    args: &Args,
+) -> Result<(), EngineError> {
+    if manifest.options.require_admin && !misc::is_elevated() {
+        misc::relaunch_elevated(&exe, &args.raw)
+            .map_err(|e| fatal(format!("需要管理员权限，重启失败: {e}")))?;
+        return Ok(()); // 新进程接手
+    }
+    let _mutex = misc::SingleInstance::new(&format!("MoInstaller.{}", manifest.app.id))
+        .ok_or_else(|| fatal("安装程序已在运行"))?;
+
+    let base_env = ConstEnv::from_process_env();
+    let default_dir = match &args.dir {
+        Some(d) => d.clone(),
+        None => base_env
+            .expand(&manifest.options.default_dir)
+            .map_err(|e| fatal(format!("展开 default_dir: {e}")))?,
+    };
+
+    // 包内 UI 资源一次性读出
+    let banner = read_meta(&mut pkg, "__mo__/theme/banner");
+    let sidebar = read_meta(&mut pkg, "__mo__/theme/sidebar");
+    let license = read_meta(&mut pkg, "__mo__/license")
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+
+    let app = gui::WizardApp::install_wizard(manifest, exe, default_dir, banner, sidebar, license);
+    let (ok, run_target) = gui::run_install_gui(app);
+    if ok {
+        if let Some(prog) = run_target {
+            let _ = std::process::Command::new(prog).spawn();
+        }
+        Ok(())
+    } else {
+        Err(EngineError::InstallFailed("安装失败（详见向导）".into()))
+    }
+}
+
+fn run_uninstall_gui(manifest: Manifest, exe: PathBuf) -> Result<(), EngineError> {
+    let app = gui::WizardApp::uninstaller(manifest, exe);
+    let ok = gui::run_uninstall_gui(app);
+    if ok {
+        Ok(())
+    } else {
+        Err(EngineError::InstallFailed("卸载失败（详见向导）".into()))
+    }
+}
+
+fn read_meta(pkg: &mut Package, path: &str) -> Option<Vec<u8>> {
+    let e = pkg.entry(path)?.clone();
+    pkg.read_entry(&e).ok()
 }
 
 fn install_flow(
@@ -96,20 +162,15 @@ fn install_flow(
     pkg: &mut Package,
     exe: &std::path::Path,
     args: &Args,
-    silent: bool,
 ) -> Result<(), EngineError> {
-    // 提权检查
     if manifest.options.require_admin && !misc::is_elevated() {
         misc::relaunch_elevated(exe, &args.raw)
             .map_err(|e| fatal(format!("需要管理员权限，重启失败: {e}")))?;
-        return Ok(()); // 新进程接手
+        return Ok(());
     }
-
-    // 单实例互斥体
     let _mutex = misc::SingleInstance::new(&format!("MoInstaller.{}", manifest.app.id))
         .ok_or_else(|| fatal("安装程序已在运行"))?;
 
-    // 目标目录
     let base_env = ConstEnv::from_process_env();
     let target_str = match &args.dir {
         Some(d) => d.clone(),
@@ -136,7 +197,7 @@ fn install_flow(
         app_name: manifest.app.name.clone(),
         app_id: manifest.app.id.clone(),
         version: manifest.app.version.clone(),
-        silent,
+        silent: true,
         selected_components: manifest
             .components
             .iter()
@@ -152,11 +213,7 @@ fn install_flow(
     executor.install(manifest, pkg, exe)
 }
 
-fn uninstall_flow(
-    manifest: &Manifest,
-    exe: &std::path::Path,
-    silent: bool,
-) -> Result<(), EngineError> {
+fn uninstall_flow(manifest: &Manifest, exe: &std::path::Path) -> Result<(), EngineError> {
     let app_dir = exe
         .parent()
         .ok_or_else(|| fatal("无法定位安装目录"))?
@@ -170,7 +227,7 @@ fn uninstall_flow(
         app_name: manifest.app.name.clone(),
         app_id: manifest.app.id.clone(),
         version: manifest.app.version.clone(),
-        silent,
+        silent: true,
         selected_components: BTreeSet::new(),
         env,
     };

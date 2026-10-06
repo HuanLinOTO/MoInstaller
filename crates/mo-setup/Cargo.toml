@@ -13,6 +13,16 @@ path = "src/main.rs"
 [dependencies]
 mo-core = { workspace = true }
 mo-engine = { path = "../mo-engine" }
+eframe = "0.31"
+egui = "0.31"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+]
 
 [dev-dependencies]
 mo-build = { workspace = true }
