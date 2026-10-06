@@ -1,0 +1,9 @@
+[package]
+name = "mo-script"
+description = "MoInstaller rhai 钩子宿主：脚本加载、沙箱白名单 API、事件分发（M4 实现）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

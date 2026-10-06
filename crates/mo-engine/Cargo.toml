@@ -1,0 +1,9 @@
+[package]
+name = "mo-engine"
+description = "MoInstaller 安装/卸载引擎：文件、注册表、快捷方式、环境变量、回滚、事件总线（M2 实现）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
