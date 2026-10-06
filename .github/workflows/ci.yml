@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build workspace (pass 1 of 2)
+        run: cargo build --workspace
+
+      - name: Build workspace (pass 2 of 2, embeds setup template)
+        run: cargo build --workspace
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Template embedded check (debug)
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path 'target/debug/mo.exe'))
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($text.Contains('MO-PLACEHOLDER-TEMPLATE')) { throw 'embedded template is still the placeholder' }
+          'template embedded'

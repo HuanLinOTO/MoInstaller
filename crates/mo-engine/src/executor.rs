@@ -498,18 +498,16 @@ impl Executor {
             // 延迟删自身后再 rmdir 清目录。
             let app_norm = norm_path(&self.ctx.app_dir.to_string_lossy());
             let keep_root = keep.contains(&app_norm);
-            if !keep_root {
-                if let Ok(entries) = std::fs::read_dir(&self.ctx.app_dir) {
-                    for e in entries.flatten() {
-                        let p = e.path();
-                        if p == self_exe {
-                            continue;
-                        }
-                        if p.is_dir() {
-                            let _ = std::fs::remove_dir_all(&p);
-                        } else {
-                            let _ = std::fs::remove_file(&p);
-                        }
+            if !keep_root && let Ok(entries) = std::fs::read_dir(&self.ctx.app_dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p == self_exe {
+                        continue;
+                    }
+                    if p.is_dir() {
+                        let _ = std::fs::remove_dir_all(&p);
+                    } else {
+                        let _ = std::fs::remove_file(&p);
                     }
                 }
             }

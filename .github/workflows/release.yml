@@ -1,0 +1,49 @@
+name: Release
+
+on:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release workspace (pass 1 of 2)
+        run: cargo build --release --workspace
+
+      - name: Build release workspace (pass 2 of 2, embeds setup template)
+        run: cargo build --release --workspace
+
+      - name: Verify template is embedded
+        shell: pwsh
+        run: |
+          $exe = 'target/release/mo.exe'
+          if (!(Test-Path $exe)) { throw "missing $exe" }
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $exe))
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($text.Contains('MO-PLACEHOLDER-TEMPLATE')) { throw 'embedded template is still the placeholder' }
+          'mo.exe template verified'
+
+      - name: Stage release artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/mo.exe dist/mo-x86_64-pc-windows-msvc.exe
+          Copy-Item target/release/mo-setup.exe dist/mo-setup-template-x86_64-pc-windows-msvc.exe
+          Get-ChildItem dist | Out-String
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/mo-x86_64-pc-windows-msvc.exe
+            dist/mo-setup-template-x86_64-pc-windows-msvc.exe
+          generate_release_notes: true
