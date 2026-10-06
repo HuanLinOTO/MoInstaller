@@ -65,10 +65,20 @@ impl Event {
 }
 
 /// 订阅者对事件的裁决。
+#[derive(Debug, Clone)]
 pub enum Decision {
     Continue,
+    /// 跳过当前文件（仅 before_file 有意义；其余事件视同 Continue）。
+    SkipFile,
     /// 中止安装/卸载（触发回滚）。
     Abort(String),
+}
+
+/// 事件分发的聚合结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flow {
+    Continue,
+    SkipFile,
 }
 
 /// 引擎上下文：订阅者可见的安装期状态。
@@ -120,14 +130,20 @@ impl EventBus {
         self.subscribers.len()
     }
 
-    /// 发事件。返回 Err(原因) 表示有订阅者要求中止。
-    pub fn emit(&mut self, event: &Event, ctx: &EngineCtx) -> Result<(), String> {
+    /// 发事件。Err(原因) = 有订阅者要求中止；
+    /// Ok(Flow::SkipFile) = 有订阅者要求跳过当前文件（仅 before_file 语义有效）。
+    pub fn emit(&mut self, event: &Event, ctx: &EngineCtx) -> Result<Flow, String> {
+        let mut flow = Flow::Continue;
         for s in &mut self.subscribers {
-            if let Decision::Abort(reason) = s.on_event(event, ctx) {
-                return Err(format!("[{}] {}", s.id(), reason));
+            match s.on_event(event, ctx) {
+                Decision::Continue => {}
+                Decision::SkipFile => flow = Flow::SkipFile,
+                Decision::Abort(reason) => {
+                    return Err(format!("[{}] {}", s.id(), reason));
+                }
             }
         }
-        Ok(())
+        Ok(flow)
     }
 }
 

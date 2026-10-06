@@ -487,3 +487,141 @@ dst = "{app}"
     );
     assert_eq!(fs::read(inst_dir.join("app.exe")).unwrap(), b"m3 themed");
 }
+
+// ===================== M4：rhai 脚本钩子 =====================
+
+fn make_m4_fixture(tmp: &Path, script: &str) -> std::path::PathBuf {
+    let dist = tmp.join("dist");
+    fs::create_dir_all(&dist).unwrap();
+    fs::write(dist.join("keep.txt"), b"keep").unwrap();
+    fs::write(dist.join("skipme.bin"), b"should be skipped").unwrap();
+
+    let toml = format!(
+        r#"
+[app]
+id = "moinst.e2e.m4"
+name = "M4Script"
+version = "4.0.0"
+publisher = "T"
+
+[[files]]
+src = "dist/**/*"
+dst = "{{app}}"
+
+[script]
+inline = '''{script}'''
+"#
+    );
+    let path = tmp.join("installer-m4.toml");
+    fs::write(&path, toml).unwrap();
+    path
+}
+
+#[test]
+fn e2e_m4_script_skips_file_and_installs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let toml = make_m4_fixture(
+        tmp.path(),
+        "fn before_file(ctx, path) { !path.contains(\"skipme\") }",
+    );
+    let setup = tmp.path().join("m4-setup.exe");
+    mo_build::build(
+        &toml,
+        &mo_build::BuildOptions {
+            template: Some(setup_bin().into()),
+            out: Some(setup.clone()),
+        },
+    )
+    .unwrap();
+
+    let inst_dir = tmp.path().join("m4 dir");
+    let out = Command::new(&setup)
+        .arg("/VERYSILENT")
+        .arg(format!("/DIR={}", inst_dir.display()))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // before_file false 的文件被跳过
+    assert!(inst_dir.join("keep.txt").is_file());
+    assert!(!inst_dir.join("skipme.bin").exists(), "skipme 应被脚本跳过");
+}
+
+#[test]
+fn e2e_m4_script_abort_fails_with_code4() {
+    let tmp = tempfile::tempdir().unwrap();
+    let toml = make_m4_fixture(
+        tmp.path(),
+        "fn initialize_setup(ctx) { ctx.abort(\"测试拒绝安装\"); true }",
+    );
+    let setup = tmp.path().join("m4-abort.exe");
+    mo_build::build(
+        &toml,
+        &mo_build::BuildOptions {
+            template: Some(setup_bin().into()),
+            out: Some(setup.clone()),
+        },
+    )
+    .unwrap();
+
+    let inst_dir = tmp.path().join("abort dir");
+    let out = Command::new(&setup)
+        .arg("/VERYSILENT")
+        .arg(format!("/DIR={}", inst_dir.display()))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4), "脚本 abort 应为退出码 4");
+    // 回滚
+    assert!(!inst_dir.join("keep.txt").exists());
+}
+
+#[test]
+fn e2e_m4_bad_script_rejected_at_build() {
+    let tmp = tempfile::tempdir().unwrap();
+    let toml = make_m4_fixture(tmp.path(), "fn broken( { }");
+    let err = mo_build::build(
+        &toml,
+        &mo_build::BuildOptions {
+            template: Some(setup_bin().into()),
+            out: Some(tmp.path().join("x.exe")),
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("rhai"), "错误信息: {err}");
+}
+
+#[test]
+fn e2e_m4_normal_script_installs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let toml = make_m4_fixture(
+        tmp.path(),
+        "fn initialize_setup(ctx) { true }
+fn on_exit(ctx, code) { ctx.log(\"done\"); }",
+    );
+    let setup = tmp.path().join("m4-ok.exe");
+    mo_build::build(
+        &toml,
+        &mo_build::BuildOptions {
+            template: Some(setup_bin().into()),
+            out: Some(setup.clone()),
+        },
+    )
+    .unwrap();
+
+    let inst_dir = tmp.path().join("ok dir");
+    let out = Command::new(&setup)
+        .arg("/VERYSILENT")
+        .arg(format!("/DIR={}", inst_dir.display()))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(inst_dir.join("keep.txt").is_file());
+    assert!(inst_dir.join("skipme.bin").is_file());
+}

@@ -124,7 +124,7 @@ mod tests {
         }]);
         match r.on_event(&Event::AfterInstall, &ctx(true)) {
             Decision::Abort(msg) => assert!(msg.contains("退出码 3")),
-            Decision::Continue => panic!("应中止"),
+            Decision::Continue | Decision::SkipFile => panic!("应中止"),
         }
     }
 

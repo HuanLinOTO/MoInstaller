@@ -523,9 +523,10 @@ impl WizardApp {
                     }
                 }
                 if ui.button(&back_label).clicked()
-                    && let Some(p) = self.prev_page() {
-                        self.page = p;
-                    }
+                    && let Some(p) = self.prev_page()
+                {
+                    self.page = p;
+                }
                 if ui.button(&cancel_label).clicked() {
                     self.closed = true;
                 }
@@ -585,9 +586,10 @@ impl WizardApp {
                         .desired_width(ui.available_width() - 90.0);
                     ui.add(edit);
                     if ui.button(t.tr("wizard.dir.browse")).clicked()
-                        && let Some(p) = picker::pick_folder() {
-                            self.dir = p.to_string_lossy().into_owned();
-                        }
+                        && let Some(p) = picker::pick_folder()
+                    {
+                        self.dir = p.to_string_lossy().into_owned();
+                    }
                 });
                 if let Ok(free) = misc::disk_free_bytes(std::path::Path::new(&self.dir)) {
                     ui.add_space(8.0);

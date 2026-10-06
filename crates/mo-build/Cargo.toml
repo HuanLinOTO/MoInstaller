@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 mo-core = { workspace = true }
+mo-script = { path = "../mo-script" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 glob = { workspace = true }

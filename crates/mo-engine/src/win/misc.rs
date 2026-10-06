@@ -97,6 +97,30 @@ impl Drop for SingleInstance {
     }
 }
 
+/// 原生弹窗。kind: "confirm" 返回用户是否点了确定；其余仅展示并返回 true。
+pub fn message_box(text: &str, kind: &str) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IDOK, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_OKCANCEL, MessageBoxW,
+    };
+    let text_w = to_wide(text);
+    let caption = to_wide("MoInstaller");
+    let (flags, confirm) = match kind {
+        "error" => (MB_ICONERROR, false),
+        "warn" | "warning" => (MB_ICONWARNING, false),
+        "confirm" => (MB_ICONINFORMATION | MB_OKCANCEL, true),
+        _ => (MB_ICONINFORMATION | MB_OK, false),
+    };
+    unsafe {
+        let r = MessageBoxW(
+            None,
+            PCWSTR(text_w.as_ptr()),
+            PCWSTR(caption.as_ptr()),
+            flags,
+        );
+        if confirm { r == IDOK } else { true }
+    }
+}
+
 /// 自删：延迟约一秒后由 cmd 删除自身（卸载收尾）。
 ///
 /// 用 ping 而非 timeout 做延迟——timeout 在 stdin 被重定向时会立即报错退出；

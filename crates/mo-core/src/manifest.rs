@@ -312,6 +312,9 @@ pub struct Script {
     /// 内联脚本。
     #[serde(default)]
     pub inline: Option<String>,
+    /// 单钩子执行超时（毫秒），默认 30000。
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]

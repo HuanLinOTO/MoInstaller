@@ -117,6 +117,33 @@ pub fn build(manifest_path: &Path, opts: &BuildOptions) -> Result<BuildStats, Er
         builder.add_file(inner, &content, 0, mtime)?;
     }
 
+    // L2 脚本：构建期预编译 + 打包（__mo__/setup.rhai）
+    if let Some(script) = &manifest.script {
+        let source = match (&script.file, &script.inline) {
+            (Some(f), _) => {
+                let p = base_dir.join(f);
+                fs::read_to_string(&p).map_err(|e| {
+                    Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("读取脚本 {f:?} 失败: {e}"),
+                    ))
+                })?
+            }
+            (None, Some(inline)) => inline.clone(),
+            _ => String::new(),
+        };
+        mo_script::compile_check(&source).map_err(Error::ManifestParse)?;
+        if let Some(f) = &script.file {
+            let sp = base_dir.join(f);
+            let mtime = fs::metadata(&sp)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            builder.add_file("__mo__/setup.rhai", source.as_bytes(), 0, mtime)?;
+        }
+    }
     let out_path = match &opts.out {
         Some(p) => p.clone(),
         None => base_dir.join(format!(

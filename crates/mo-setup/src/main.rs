@@ -16,6 +16,8 @@ use mo_engine::event::{EngineCtx, EventBus};
 use mo_engine::executor::{EngineError, Executor};
 use mo_engine::hook::HookRunner;
 use mo_engine::win::misc;
+use mo_engine::win::registry as winreg;
+use mo_script::{ScriptHost, ScriptOptions};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -152,6 +154,84 @@ fn run_uninstall_gui(manifest: Manifest, exe: PathBuf) -> Result<(), EngineError
     }
 }
 
+/// 宿主 API 真实实现：注册表只读 + 原生弹窗 + 子进程。
+struct RealHost {
+    silent: bool,
+}
+
+impl mo_script::HostApi for RealHost {
+    fn reg_read(&self, root: &str, key: &str, name: &str) -> Option<String> {
+        winreg::root_from_str(root).and_then(|r| winreg::read_string(r, key, name))
+    }
+    fn log(&self, msg: &str) {
+        println!("[script] {msg}");
+    }
+    fn set_progress(&self, pct: f64, msg: &str) {
+        println!("[progress {:.0}%] {msg}", pct);
+    }
+    fn message_box(&self, text: &str, kind: &str) -> bool {
+        if self.silent {
+            return true; // 静默模式禁交互，视为确认
+        }
+        misc::message_box(text, kind)
+    }
+    fn run(&self, cmd: &str, args: &[String]) -> Option<i32> {
+        std::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .ok()
+            .map(|o| o.status.code().unwrap_or(-1))
+    }
+}
+
+/// 读取脚本源：__mo__/setup.rhai（文件方式）或 manifest 内联。
+fn script_source(manifest: &Manifest, pkg: &mut Package) -> Option<String> {
+    let sc = manifest.script.as_ref()?;
+    match (&sc.file, &sc.inline) {
+        (Some(_), _) => {
+            let e = pkg.entry("__mo__/setup.rhai")?.clone();
+            Some(String::from_utf8_lossy(&pkg.read_entry(&e).ok()?).into_owned())
+        }
+        (None, Some(inline)) => Some(inline.clone()),
+        _ => None,
+    }
+}
+
+/// 构造事件总线：L1 钩子 + L2 脚本。
+fn build_bus(
+    manifest: &Manifest,
+    silent: bool,
+    selected: Vec<String>,
+    script_src: Option<String>,
+) -> EventBus {
+    let mut bus = EventBus::new();
+    if !manifest.hooks.is_empty() {
+        bus.subscribe(Box::new(HookRunner::new(manifest.hooks.clone())));
+    }
+    if let Some(src) = script_src {
+        let opts = ScriptOptions {
+            timeout_ms: manifest
+                .script
+                .as_ref()
+                .and_then(|s| s.timeout_ms)
+                .unwrap_or(30_000),
+            max_operations: 10_000_000,
+        };
+        match ScriptHost::new(
+            manifest,
+            &src,
+            silent,
+            &selected,
+            Box::new(RealHost { silent }),
+            opts,
+        ) {
+            Ok(h) => bus.subscribe(Box::new(h)),
+            Err(e) => eprintln!("mo-setup: {e}"),
+        }
+    }
+    bus
+}
+
 fn read_meta(pkg: &mut Package, path: &str) -> Option<Vec<u8>> {
     let e = pkg.entry(path)?.clone();
     pkg.read_entry(&e).ok()
@@ -205,10 +285,9 @@ fn install_flow(
             .collect::<BTreeSet<_>>(),
         env,
     };
-    let mut bus = EventBus::new();
-    if !manifest.hooks.is_empty() {
-        bus.subscribe(Box::new(HookRunner::new(manifest.hooks.clone())));
-    }
+    let selected: Vec<String> = manifest.components.iter().map(|c| c.id.clone()).collect();
+    let script = script_source(manifest, pkg);
+    let bus = build_bus(manifest, true, selected, script);
     let mut executor = Executor::new(bus, ctx, target.join("mo-install.log"));
     executor.install(manifest, pkg, exe)
 }
@@ -231,10 +310,7 @@ fn uninstall_flow(manifest: &Manifest, exe: &std::path::Path) -> Result<(), Engi
         selected_components: BTreeSet::new(),
         env,
     };
-    let mut bus = EventBus::new();
-    if !manifest.hooks.is_empty() {
-        bus.subscribe(Box::new(HookRunner::new(manifest.hooks.clone())));
-    }
+    let bus = build_bus(manifest, true, Vec::new(), None);
     let log_path = ctx.app_dir.join("mo-install.log");
     let mut executor = Executor::new(bus, ctx, log_path);
     executor.uninstall(manifest, exe)

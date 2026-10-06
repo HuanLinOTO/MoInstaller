@@ -2,7 +2,7 @@
 #![allow(clippy::permissions_set_readonly_false)] // Windows 专用：覆盖只读文件前清只读位
 
 use crate::actions::{ActionLog, ActionRecord};
-use crate::event::{Event, EventBus, Step};
+use crate::event::{Event, EventBus, Flow, Step};
 use crate::win::{env as wine, misc, registry as winreg, shortcut as winshortcut};
 use mo_core::manifest::{EnvScope, Manifest, Overwrite, RegRoot, RegValueType, ShortcutDest};
 use mo_core::overlay::{ATTR_READONLY, Package};
@@ -171,11 +171,13 @@ impl Executor {
             let prefix = format!("f{i}/");
             for entry in pkg.entries_with_prefix(&prefix) {
                 let rel = entry.path[prefix.len()..].to_string();
-                self.bus
+                let flow = self
+                    .bus
                     .emit(&Event::BeforeFile { path: rel.clone() }, &self.ctx)
                     .map_err(EngineError::HookAborted)?;
                 let dst = Path::new(&dst_root).join(&rel);
-                let skipped = self.apply_overwrite(&dst, rule.overwrite, entry.mtime);
+                let skipped = self.apply_overwrite(&dst, rule.overwrite, entry.mtime)
+                    || flow == Flow::SkipFile;
                 if !skipped {
                     let data = pkg
                         .read_entry(&entry)
@@ -363,13 +365,15 @@ impl Executor {
     fn step_begin(&mut self, step: Step) -> Result<(), EngineError> {
         self.bus
             .emit(&Event::BeforeStep(step), &self.ctx)
-            .map_err(EngineError::HookAborted)
+            .map_err(EngineError::HookAborted)?;
+        Ok(())
     }
 
     fn step_end(&mut self, step: Step) -> Result<(), EngineError> {
         self.bus
             .emit(&Event::AfterStep(step), &self.ctx)
-            .map_err(EngineError::HookAborted)
+            .map_err(EngineError::HookAborted)?;
+        Ok(())
     }
 
     /// 写单文件（含父目录创建、只读清位、占用重试）。
