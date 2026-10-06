@@ -310,6 +310,31 @@ fn run_uninstall_thread(
 }
 
 /// 运行安装 GUI。返回 (是否成功, 成功后要运行的程序（已展开）)。
+/// 安装系统中文字体：egui 内置字体不含 CJK 字形，中文文案会渲染为豆腐块。
+/// 按优先级探测 Windows 常见中文字体（ttc 取 index 0），全部缺失则保持默认。
+fn install_cjk_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    for cand in [
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\simhei.ttf",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+    ] {
+        if let Ok(bytes) = std::fs::read(cand) {
+            fonts.font_data.insert(
+                "cjk".into(),
+                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                if let Some(list) = fonts.families.get_mut(&family) {
+                    list.push("cjk".into());
+                }
+            }
+            break;
+        }
+    }
+    ctx.set_fonts(fonts);
+}
+
 pub fn run_install_gui(mut app: WizardApp) -> (bool, Option<String>) {
     let mut native = eframe::NativeOptions::default();
     let (w, h) = app
@@ -327,6 +352,7 @@ pub fn run_install_gui(mut app: WizardApp) -> (bool, Option<String>) {
         native,
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
+            install_cjk_fonts(&ctx);
             // 用真实 ctx 重建主题（纹理）
             let theme = ThemeRuntime::new(
                 &app.manifest,
@@ -363,6 +389,7 @@ pub fn run_uninstall_gui(mut app: WizardApp) -> bool {
         native,
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
+            install_cjk_fonts(&ctx);
             let theme = ThemeRuntime::new(
                 &app.manifest,
                 &ctx,

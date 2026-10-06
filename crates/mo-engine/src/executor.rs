@@ -532,12 +532,16 @@ impl Executor {
             .collect();
         // 每目录一条独立命令：cmd 的 || 右侧会吞掉后续 & 子句，
         // 链式拼接会在首目录删除成功时短路跳过其余目录。
-        use std::os::windows::process::CommandExt;
         for d in &created_dirs {
             let cmd = format!(
                 "/c ping -n 3 127.0.0.1 >nul & rmdir \"{d}\" & ping -n 2 127.0.0.1 >nul & rmdir \"{d}\""
             );
-            let _ = std::process::Command::new("cmd").raw_arg(cmd).spawn();
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let _ = std::process::Command::new("cmd")
+                .raw_arg(cmd)
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
         }
 
         // 自删（延迟）

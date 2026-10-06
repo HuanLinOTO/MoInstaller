@@ -1903,7 +1903,7 @@ dependencies = [
 
 [[package]]
 name = "mo-build"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1914,7 +1914,7 @@ dependencies = [
 
 [[package]]
 name = "mo-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "crc32fast",
  "serde",
@@ -1926,7 +1926,7 @@ dependencies = [
 
 [[package]]
 name = "mo-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "mo-core",
  "serde",
@@ -1937,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "mo-script"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "mo-core",
  "mo-engine",
@@ -1946,7 +1946,7 @@ dependencies = [
 
 [[package]]
 name = "mo-setup"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "eframe",
  "egui",

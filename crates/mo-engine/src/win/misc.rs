@@ -135,7 +135,11 @@ pub fn self_delete(exe: &Path) {
         "/c ping -n 2 127.0.0.1 >nul & (del /f /q \"{p}\" || (ping -n 2 127.0.0.1 >nul & del /f /q \"{p}\")) & rmdir \"{parent}\""
     );
     use std::os::windows::process::CommandExt;
-    let _ = std::process::Command::new("cmd").raw_arg(cmd).spawn();
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("cmd")
+        .raw_arg(cmd)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
 }
 
 #[cfg(test)]

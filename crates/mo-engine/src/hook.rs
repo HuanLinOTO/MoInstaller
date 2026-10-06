@@ -50,8 +50,16 @@ impl Subscriber for HookRunner {
             } else {
                 Stdio::inherit()
             };
-            let status = Command::new(&cmd)
-                .args(&args)
+            let mut c = Command::new(&cmd);
+            c.args(&args);
+            // GUI 子进程执行外部命令时不弹 conhost 黑框
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                c.creation_flags(CREATE_NO_WINDOW);
+            }
+            let status = c
                 .env("MO_APP_DIR", &ctx.app_dir)
                 .env("MO_VERSION", &ctx.version)
                 .env("MO_SILENT", ctx.silent.to_string())
