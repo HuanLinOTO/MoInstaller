@@ -180,6 +180,10 @@ pub struct WindowSize {
     pub height: u32,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
@@ -187,6 +191,17 @@ pub struct Component {
     pub name: String,
     #[serde(default)]
     pub required: bool,
+    /// 是否默认勾选（GUI 初始状态与静默安装的选择依据）。
+    /// required = true 时恒为选中（等价 Inno Tasks 的 unchecked 反义）。
+    #[serde(default = "default_true")]
+    pub default: bool,
+}
+
+impl Component {
+    /// 实际默认选中状态（required 蕴含选中）。
+    pub fn default_selected(&self) -> bool {
+        self.required || self.default
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -293,6 +308,9 @@ pub struct Uninstall {
     /// 卸载时保留的用户数据（支持常量）。
     #[serde(default)]
     pub keep: Vec<String>,
+    /// 控制面板卸载条目的 DisplayIcon（支持常量，如 "{app}\app.exe"）。
+    #[serde(default)]
+    pub display_icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -475,10 +493,18 @@ impl Manifest {
                 .map_err(|er| Error::ManifestInvalid(format!("env.value 常量非法: {er}")))?;
         }
 
-        // uninstall.keep / run.after / theme 图片
+        // uninstall.keep / display_icon / run.after / theme 图片
         for k in &self.uninstall.keep {
             validate_placeholders(k)
                 .map_err(|e| Error::ManifestInvalid(format!("uninstall.keep 常量非法: {e}")))?;
+        }
+        if let Some(icon) = &self.uninstall.display_icon {
+            if icon.trim().is_empty() {
+                return invalid("uninstall.display_icon 不能为空".into());
+            }
+            validate_placeholders(icon).map_err(|e| {
+                Error::ManifestInvalid(format!("uninstall.display_icon 常量非法: {e}"))
+            })?;
         }
         if let Some(a) = &self.run.after {
             validate_placeholders(a)

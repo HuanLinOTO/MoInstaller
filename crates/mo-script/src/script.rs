@@ -59,6 +59,58 @@ impl ScriptCtx {
     fn host<R>(&self, f: impl FnOnce(&Box<dyn HostApi>) -> R) -> R {
         f(&self.inner.host.lock().unwrap())
     }
+
+    fn app_dir_str(&self) -> String {
+        self.inner.app_dir.lock().unwrap().clone()
+    }
+
+    /// 规范化路径用于前缀比较（小写、正斜杠归一为反斜杠）。
+    fn norm_for_cmp(p: &str) -> String {
+        p.to_ascii_lowercase().replace('/', "\\")
+    }
+
+    /// 写/删护栏：目标必须严格位于 {app} 目录内（防止脚本误伤系统目录）。
+    /// 这是作者脚本的失误护栏，不是安全边界。
+    fn guard_app(&self, p: &str) -> bool {
+        let app = Self::norm_for_cmp(&self.app_dir_str());
+        if app.is_empty() {
+            return false;
+        }
+        let t = Self::norm_for_cmp(p);
+        t.starts_with(&app) && t.len() > app.len() && t.as_bytes()[app.len()] == b'\\'
+    }
+}
+
+/// 沙箱文件系统 API 的 ctx 侧实现（探测不限路径，写/删限 {app} 内）。
+mod fs_api {
+    use super::ScriptCtx;
+
+    impl ScriptCtx {
+        pub fn file_exists(&self, path: &str) -> bool {
+            std::path::Path::new(path).is_file()
+        }
+        pub fn dir_exists(&self, path: &str) -> bool {
+            std::path::Path::new(path).is_dir()
+        }
+        pub fn write_text(&self, path: &str, content: &str) -> bool {
+            if !self.guard_app(path) {
+                return false;
+            }
+            std::fs::write(path, content).is_ok()
+        }
+        pub fn delete_file(&self, path: &str) -> bool {
+            if !self.guard_app(path) {
+                return false;
+            }
+            std::fs::remove_file(path).is_ok()
+        }
+        pub fn delete_dir(&self, path: &str) -> bool {
+            if !self.guard_app(path) {
+                return false;
+            }
+            std::fs::remove_dir_all(path).is_ok()
+        }
+    }
 }
 
 /// 构建期预编译检查：语法/编译错误在此暴露。
@@ -136,6 +188,23 @@ impl ScriptHost {
         );
         engine.register_fn("log", |c: &mut ScriptCtx, msg: &str| {
             c.host(|h| h.log(msg));
+        });
+        // ---- 沙箱文件系统（探测不限路径；写/删限 {app} 内）----
+        engine.register_fn("file_exists", |c: &mut ScriptCtx, path: &str| {
+            c.file_exists(path)
+        });
+        engine.register_fn("dir_exists", |c: &mut ScriptCtx, path: &str| {
+            c.dir_exists(path)
+        });
+        engine.register_fn(
+            "write_text",
+            |c: &mut ScriptCtx, path: &str, content: &str| c.write_text(path, content),
+        );
+        engine.register_fn("delete_file", |c: &mut ScriptCtx, path: &str| {
+            c.delete_file(path)
+        });
+        engine.register_fn("delete_dir", |c: &mut ScriptCtx, path: &str| {
+            c.delete_dir(path)
         });
         engine.register_fn("set_progress", |c: &mut ScriptCtx, pct: f64, msg: &str| {
             c.host(|h| h.set_progress(pct, msg));
@@ -534,5 +603,55 @@ fn initialize_setup(ctx) { true }",
             h.on_event(&Event::Exit { code: 4 }, &ectx()),
             Decision::Continue
         ));
+    }
+
+    #[test]
+    fn fs_api_roundtrip_and_guard() {
+        let tmp = std::env::temp_dir().join(format!("mo-fs-api-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("python-runtime/runtime-envs")).unwrap();
+        // {app} 外的哨兵文件（写保护目标）
+        let outside = std::env::temp_dir().join(format!("mo-fs-out-{}.txt", std::process::id()));
+
+        let e = EngineCtx {
+            app_dir: tmp.clone(),
+            ..ectx()
+        };
+        let mut h = host(
+            r#"fn after_install(ctx) {
+                let app = ctx.app_dir;
+                // 探测：不存在 -> 存在（rhai 字符串内反斜杠双写）
+                let before = ctx.file_exists(app + "\\python-runtime\\runtime-envs\\active-runtime.json");
+                ctx.write_text(app + "\\python-runtime\\runtime-envs\\active-runtime.json", "cuda");
+                let after = ctx.file_exists(app + "\\python-runtime\\runtime-envs\\active-runtime.json");
+                // dir_exists
+                let dir_ok = ctx.dir_exists(app + "\\python-runtime\\runtime-envs");
+                let dir_bad = ctx.dir_exists(app + "\\python-runtime\\nope");
+                // 护栏：{app} 外写入必须失败
+                let outside_write = ctx.write_text("C:\\Windows\\mo-fs-evil.txt", "x");
+                // 护栏：路径前缀相似也不行（app2 != app）
+                let prefix_write = ctx.write_text(app + "2\\evil.txt", "x");
+                // 护栏：删 {app} 外失败
+                let outside_delete = ctx.delete_file("C:\\Windows\\notepad.exe");
+                // {app} 内删除成功
+                ctx.write_text(app + "\\tmp-mark.txt", "m");
+                let del_ok = ctx.delete_file(app + "\\tmp-mark.txt");
+                let del_gone = ctx.file_exists(app + "\\tmp-mark.txt");
+                // 递归删目录
+                ctx.write_text(app + "\\python-runtime\\runtime-envs\\cpu\\x.txt", "x");
+                let rmdir_ok = ctx.delete_dir(app + "\\python-runtime\\runtime-envs\\cpu");
+                let rmdir_gone = ctx.dir_exists(app + "\\python-runtime\\runtime-envs\\cpu");
+                before == false && after == true && dir_ok == true && dir_bad == false
+                    && outside_write == false && prefix_write == false && outside_delete == false
+                    && del_ok == true && del_gone == false && rmdir_ok == true && rmdir_gone == false
+            }"#,
+            ScriptOptions::default(),
+        );
+        match h.on_event(&Event::AfterInstall, &e) {
+            Decision::Continue => {}
+            other => panic!("fs api 断言失败: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_file(&outside);
     }
 }

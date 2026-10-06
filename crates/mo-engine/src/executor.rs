@@ -343,6 +343,14 @@ impl Executor {
             &format!("\"{}\"", uninstall_exe.display()),
             RegValueType::String,
         );
+        if let Some(icon_tpl) = &manifest.uninstall.display_icon {
+            let icon = self
+                .ctx
+                .env
+                .expand(icon_tpl)
+                .map_err(|e| EngineError::Fatal(format!("uninstall.display_icon 展开: {e}")))?;
+            let _ = winreg::set_value(uroot, &ukey, "DisplayIcon", &icon, RegValueType::String);
+        }
         self.log.push(ActionRecord::WroteUninstallKey {
             root: root_str(uroot).into(),
             key: ukey,

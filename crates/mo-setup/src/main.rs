@@ -176,16 +176,21 @@ impl mo_script::HostApi for RealHost {
         misc::message_box(text, kind)
     }
     fn run(&self, cmd: &str, args: &[String]) -> Option<i32> {
-        std::process::Command::new(cmd)
-            .args(args)
-            .output()
-            .ok()
-            .map(|o| o.status.code().unwrap_or(-1))
+        let mut c = std::process::Command::new(cmd);
+        c.args(args);
+        // GUI 子进程启动控制台程序时不闪黑框
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            c.creation_flags(CREATE_NO_WINDOW);
+        }
+        c.output().ok().map(|o| o.status.code().unwrap_or(-1))
     }
 }
 
 /// 读取脚本源：__mo__/setup.rhai（文件方式）或 manifest 内联。
-fn script_source(manifest: &Manifest, pkg: &mut Package) -> Option<String> {
+pub(crate) fn script_source(manifest: &Manifest, pkg: &mut Package) -> Option<String> {
     let sc = manifest.script.as_ref()?;
     match (&sc.file, &sc.inline) {
         (Some(_), _) => {
@@ -198,7 +203,7 @@ fn script_source(manifest: &Manifest, pkg: &mut Package) -> Option<String> {
 }
 
 /// 构造事件总线：L1 钩子 + L2 脚本。
-fn build_bus(
+pub(crate) fn build_bus(
     manifest: &Manifest,
     silent: bool,
     selected: Vec<String>,
@@ -272,20 +277,22 @@ fn install_flow(
         target.display()
     );
 
+    // 静默安装的组件选择：required 或 default（对齐 Inno 未勾选任务的静默语义）
+    let selected: Vec<String> = manifest
+        .components
+        .iter()
+        .filter(|c| c.default_selected())
+        .map(|c| c.id.clone())
+        .collect();
     let ctx = EngineCtx {
         app_dir: target.clone(),
         app_name: manifest.app.name.clone(),
         app_id: manifest.app.id.clone(),
         version: manifest.app.version.clone(),
         silent: true,
-        selected_components: manifest
-            .components
-            .iter()
-            .map(|c| c.id.clone())
-            .collect::<BTreeSet<_>>(),
+        selected_components: selected.iter().cloned().collect::<BTreeSet<_>>(),
         env,
     };
-    let selected: Vec<String> = manifest.components.iter().map(|c| c.id.clone()).collect();
     let script = script_source(manifest, pkg);
     let bus = build_bus(manifest, true, selected, script);
     let mut executor = Executor::new(bus, ctx, target.join("mo-install.log"));

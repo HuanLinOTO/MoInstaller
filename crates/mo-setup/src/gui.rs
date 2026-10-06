@@ -79,7 +79,7 @@ impl WizardApp {
         let components = manifest
             .components
             .iter()
-            .map(|c| (c.id.clone(), true))
+            .map(|c| (c.id.clone(), c.default_selected()))
             .collect();
         Self {
             page: theme.pages.first().copied().unwrap_or(Page::Install),
@@ -259,6 +259,7 @@ fn run_install_thread(
     let base_env = ConstEnv::from_process_env();
     let env = base_env.with_app(&target, &manifest.app.name);
     let total: usize = pkg.entries.len();
+    let selected_vec: Vec<String> = selected.iter().cloned().collect();
     let ctx = EngineCtx {
         app_dir: target.clone(),
         app_name: manifest.app.name.clone(),
@@ -268,10 +269,9 @@ fn run_install_thread(
         selected_components: selected,
         env,
     };
-    let mut bus = EventBus::new();
-    if !manifest.hooks.is_empty() {
-        bus.subscribe(Box::new(HookRunner::new(manifest.hooks.clone())));
-    }
+    // 与静默路径一致：L1 钩子 + L2 脚本 + UI 进度
+    let script = super::script_source(&manifest, &mut pkg);
+    let mut bus = super::build_bus(&manifest, false, selected_vec, script);
     bus.subscribe(Box::new(UiProgress {
         tx: tx.clone(),
         files_total: total,
@@ -603,7 +603,10 @@ impl WizardApp {
                 ui.add_space(8.0);
                 let comps = self.manifest.components.clone();
                 for c in comps {
-                    let on = self.components.entry(c.id.clone()).or_insert(true);
+                    let on = self
+                        .components
+                        .entry(c.id.clone())
+                        .or_insert(c.default_selected());
                     let mut v = *on;
                     ui.add_enabled(!c.required, egui::Checkbox::new(&mut v, &c.name));
                     *on = v || c.required;
