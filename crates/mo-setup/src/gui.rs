@@ -55,6 +55,8 @@ pub struct WizardApp {
     /// 卸载模式
     pub uninstall_mode: bool,
     pub uninstall_keep: bool,
+    /// 当前页进入时刻（页面切换入场动画用）。
+    pub page_enter: std::time::Instant,
 }
 
 #[derive(Default, Clone)]
@@ -107,6 +109,7 @@ impl WizardApp {
             closed: false,
             uninstall_mode: false,
             uninstall_keep: true,
+            page_enter: std::time::Instant::now(),
         }
     }
 
@@ -137,7 +140,14 @@ impl WizardApp {
             closed: false,
             uninstall_mode: true,
             uninstall_keep: true,
+            page_enter: std::time::Instant::now(),
         }
+    }
+
+    /// 切页并重置入场动画时钟。
+    fn set_page(&mut self, p: Page) {
+        self.page = p;
+        self.page_enter = std::time::Instant::now();
     }
 
     fn next_page(&self) -> Option<Page> {
@@ -157,7 +167,7 @@ impl WizardApp {
     fn start_install(&mut self) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.install_rx = Some(rx);
-        self.page = Page::Install;
+        self.set_page(Page::Install);
 
         let manifest = self.manifest.clone();
         let exe = self.self_exe.clone();
@@ -195,8 +205,16 @@ impl WizardApp {
     }
 
     fn poll_install(&mut self) {
-        let Some(rx) = &self.install_rx else { return };
-        while let Ok(msg) = rx.try_recv() {
+        // 先取空 channel（块作用域结束即释放不可变借用），再处理消息
+        let msgs: Vec<UiMsg> = {
+            let Some(rx) = &self.install_rx else { return };
+            let mut v = Vec::new();
+            while let Ok(m) = rx.try_recv() {
+                v.push(m);
+            }
+            v
+        };
+        for msg in msgs {
             match msg {
                 UiMsg::Step(s) => self.progress.step = s,
                 UiMsg::File { path, done, total } => {
@@ -207,7 +225,7 @@ impl WizardApp {
                 UiMsg::Done(r) => {
                     self.progress.finished = true;
                     self.result = Some(r);
-                    self.page = Page::Finish;
+                    self.set_page(Page::Finish);
                 }
             }
         }
@@ -469,17 +487,113 @@ impl eframe::App for GuiWrap {
     }
 }
 
-/// 成功/失败大徽章：圆形底色 + 对勾/叉。
-fn badge(ui: &mut egui::Ui, ok: bool) {
+/// 白色「下载入托盘」符号（安装意象），c 为符号中心，s 为比例（1.0 = 72px logo 尺度）。
+fn draw_symbol(painter: &egui::Painter, c: egui::Pos2, s: f32, color: Color32) {
+    // 箭头杆
+    painter.rect_filled(
+        egui::Rect::from_center_size(c + egui::vec2(0.0, -8.0 * s), egui::vec2(7.0 * s, 16.0 * s)),
+        egui::CornerRadius::same(3),
+        color,
+    );
+    // 箭头 V 尖
+    let tip = c + egui::vec2(0.0, 8.0 * s);
+    painter.line_segment(
+        [c + egui::vec2(-11.0 * s, -6.0 * s), tip],
+        egui::Stroke::new(7.0_f32 * s, color),
+    );
+    painter.line_segment(
+        [tip, c + egui::vec2(11.0 * s, -6.0 * s)],
+        egui::Stroke::new(7.0_f32 * s, color),
+    );
+    // 托盘
+    painter.rect_filled(
+        egui::Rect::from_center_size(c + egui::vec2(0.0, 22.0 * s), egui::vec2(30.0 * s, 5.0 * s)),
+        egui::CornerRadius::same(2),
+        color,
+    );
+}
+
+/// 品牌 logo：双层叠块（亮色底块错位 + accent 主块）+ 白色安装符号。
+fn draw_install_logo(ui: &mut egui::Ui, rect: egui::Rect, accent: Color32) {
+    let painter = ui.painter();
+    let corner = 16.0_f32;
+    let light = Color32::from_rgb(
+        (accent.r() as u32 + (255 - accent.r() as u32) * 45 / 100) as u8,
+        (accent.g() as u32 + (255 - accent.g() as u32) * 45 / 100) as u8,
+        (accent.b() as u32 + (255 - accent.b() as u32) * 45 / 100) as u8,
+    );
+    painter.rect_filled(
+        rect.translate(egui::vec2(6.0, 6.0)),
+        egui::CornerRadius::same(corner as u8),
+        light,
+    );
+    painter.rect_filled(rect, egui::CornerRadius::same(corner as u8), accent);
+    draw_symbol(painter, rect.center(), 1.0, Color32::WHITE);
+}
+
+/// 圆环进度：浅色轨道 + accent 弧 + 端点光斑，中心为百分比大字。
+fn draw_progress_ring(ui: &mut egui::Ui, rect: egui::Rect, frac: f32, accent: Color32, pct: i32) {
+    let painter = ui.painter();
+    let center = rect.center();
+    let radius = 62.0_f32;
+    let lw = 12.0_f32;
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(lw, Color32::from_rgb(0xEC, 0xEF, 0xF3)),
+    );
+    if frac > 0.001 {
+        let start = -std::f32::consts::FRAC_PI_2;
+        let end = start + frac * std::f32::consts::TAU;
+        // 弧离散为折线（粗圆帽线段串，视觉即平滑弧）
+        let n = ((frac * 64.0).ceil() as usize).max(2);
+        let points: Vec<egui::Pos2> = (0..=n)
+            .map(|i| {
+                let a = start + (end - start) * (i as f32 / n as f32);
+                center + egui::vec2(a.cos(), a.sin()) * radius
+            })
+            .collect();
+        painter.add(egui::Shape::line(points, egui::Stroke::new(lw, accent)));
+        let tip = center + egui::vec2(end.cos(), end.sin()) * radius;
+        painter.circle_filled(
+            tip,
+            lw * 0.5 + 3.0,
+            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 70),
+        );
+        painter.circle_filled(tip, 4.5, Color32::WHITE);
+    }
+    painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        format!("{pct}%"),
+        egui::FontId::proportional(30.0),
+        accent,
+    );
+}
+
+/// 成功/失败大徽章：圆形底色 + 对勾/叉，k 为入场进度（0..1，带回弹）。
+fn badge(ui: &mut egui::Ui, ok: bool, k: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(56.0, 56.0), Sense::hover());
     let (fill, mark) = if ok {
         (Color32::from_rgb(0x2E, 0xA0, 0x4E), "\u{2713}")
     } else {
         (Color32::from_rgb(0xD8, 0x3A, 0x3A), "\u{2715}")
     };
-    ui.painter().circle_filled(rect.center(), 28.0, fill);
+    // ease-out-back：轻微过冲的弹性入场
+    let c1 = 1.70158;
+    let e = 1.0 + (c1 + 1.0) * (k - 1.0).powi(3) + c1 * (k - 1.0).powi(2);
+    let e = e.clamp(0.0, 1.15);
+    let center = rect.center();
+    let halo = 34.0 * e;
+    // 光晕
+    ui.painter().circle_filled(
+        center,
+        halo,
+        Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 38),
+    );
+    ui.painter().circle_filled(center, 28.0 * e, fill);
     ui.painter().text(
-        rect.center(),
+        center,
         egui::Align2::CENTER_CENTER,
         mark,
         egui::FontId::proportional(30.0),
@@ -573,29 +687,23 @@ impl WizardApp {
             );
             return;
         }
-        let fill = self.theme.sidebar_fill();
         let name = self.manifest.app.name.clone();
         let version = self.manifest.app.version.clone();
         let publisher = self.manifest.app.publisher.clone();
 
         ui.add_space(30.0);
+        // 玻璃感 logo：半透明白双层块 + 白色安装符号
         ui.horizontal(|ui| {
             ui.add_space(22.0);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(52.0, 52.0), Sense::hover());
-            ui.painter()
-                .rect_filled(rect, egui::CornerRadius::same(13), Color32::WHITE);
-            let ch = name
-                .chars()
-                .next()
-                .map(|c| c.to_string().to_uppercase())
-                .unwrap_or_else(|| "M".into());
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                ch,
-                egui::FontId::proportional(24.0),
-                fill,
+            let painter = ui.painter();
+            painter.rect_filled(
+                rect.translate(egui::vec2(4.0, 4.0)),
+                egui::CornerRadius::same(13),
+                white_a(0.10),
             );
+            painter.rect_filled(rect, egui::CornerRadius::same(13), white_a(0.18));
+            draw_symbol(painter, rect.center(), 0.72, Color32::WHITE);
         });
         ui.add_space(18.0);
         ui.horizontal(|ui| {
@@ -677,13 +785,13 @@ impl WizardApp {
                     if self.next_page() == Some(Page::Install) && !self.uninstall_mode {
                         self.start_install();
                     } else if let Some(p) = self.next_page() {
-                        self.page = p;
+                        self.set_page(p);
                     }
                 }
                 if ui.add(self.theme.secondary_button(&back_label)).clicked()
                     && let Some(p) = self.prev_page()
                 {
-                    self.page = p;
+                    self.set_page(p);
                 }
                 if ui.add(self.theme.secondary_button(&cancel_label)).clicked() {
                     self.closed = true;
@@ -701,6 +809,14 @@ impl WizardApp {
     }
 
     fn page_body(&mut self, ui: &mut egui::Ui) {
+        // 页面入场：0.25s ease-out 淡入，动画未结束期间持续请求重绘
+        let t = self.page_enter.elapsed().as_secs_f32();
+        let k = (t / 0.25).min(1.0);
+        let k = 1.0 - (1.0 - k) * (1.0 - k);
+        if k < 1.0 {
+            ui.ctx().request_repaint();
+        }
+        ui.set_opacity(k);
         let accent = self.theme.accent;
         match self.page {
             Page::Welcome => {
@@ -711,6 +827,12 @@ impl WizardApp {
                 let version = self.manifest.app.version.clone();
                 let publisher = self.manifest.app.publisher.clone();
 
+                // 大 logo（双层叠块 + 安装符号），入场带上移
+                let drift = (1.0 - k) * 14.0;
+                let (lrect, _) = ui.allocate_exact_size(egui::vec2(72.0, 72.0), Sense::hover());
+                let lrect = lrect.translate(egui::vec2(0.0, -drift));
+                draw_install_logo(ui, lrect, accent);
+                ui.add_space(16.0);
                 ui.heading(RichText::new(&title).strong());
                 ui.add_space(12.0);
                 ui.label(
@@ -773,10 +895,10 @@ impl WizardApp {
                 ui.label(RichText::new(&prompt).weak());
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.dir)
-                            .desired_width(ui.available_width() - 104.0)
-                            .clip_text(true),
+                    let tw = ui.available_width() - 110.0;
+                    ui.add_sized(
+                        [tw, 36.0],
+                        egui::TextEdit::singleline(&mut self.dir).clip_text(true),
                     );
                     if ui.add(self.theme.secondary_button(&browse)).clicked()
                         && let Some(p) = picker::pick_folder()
@@ -844,42 +966,51 @@ impl WizardApp {
                 ui.heading(RichText::new(&title).strong());
                 ui.add_space(4.0);
                 ui.label(RichText::new(&wait).weak());
-                ui.add_space(26.0);
+                ui.add_space(20.0);
                 let frac = if self.progress.files_total > 0 {
                     self.progress.files_done as f32 / self.progress.files_total as f32
                 } else {
                     0.0
                 };
-                let pct = (frac * 100.0).round() as i32;
-                ui.label(
-                    RichText::new(format!("{pct}%"))
-                        .size(36.0)
-                        .strong()
-                        .color(accent),
+                // 进度平滑追踪（0.4s 缓动）
+                let shown = ui.ctx().animate_value_with_time(
+                    egui::Id::new("mo-progress"),
+                    frac.clamp(0.0, 1.0),
+                    0.4,
                 );
-                ui.add_space(8.0);
-                ui.add_sized(
-                    [ui.available_width(), 14.0],
-                    egui::ProgressBar::new(frac.clamp(0.0, 1.0))
-                        .fill(accent)
-                        .text(format!(
-                            "{} / {}",
-                            self.progress.files_done, self.progress.files_total
-                        )),
-                );
-                ui.add_space(16.0);
+                let pct = (shown * 100.0).round() as i32;
+
+                // 圆环进度
+                ui.vertical_centered(|ui| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(148.0, 148.0), Sense::hover());
+                    draw_progress_ring(ui, rect, shown, accent, pct);
+                });
+                ui.add_space(18.0);
+
                 let step = self.progress.step.clone();
                 let file = self.progress.current_file.clone();
-                ui.label(RichText::new(&step).strong().size(13.5));
+                let done = self.progress.files_done;
+                let total = self.progress.files_total;
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(18.0).color(accent));
+                    ui.label(RichText::new(&step).strong().size(13.5));
+                });
                 ui.add(
-                    egui::Label::new(RichText::new(&file).weak().size(12.0).monospace()).truncate(),
+                    egui::Label::new(
+                        RichText::new(format!("{file}  ({done} / {total})"))
+                            .weak()
+                            .size(12.0)
+                            .monospace(),
+                    )
+                    .truncate(),
                 );
             }
             Page::Finish if !self.uninstall_mode => match &self.result {
                 Some(Ok(())) => {
                     let title = self.theme.tr("wizard.finish.title");
                     let text = self.theme.tr("wizard.finish.text");
-                    badge(ui, true);
+                    badge(ui, true, k);
                     ui.add_space(14.0);
                     ui.heading(RichText::new(&title).strong());
                     ui.add_space(6.0);
@@ -893,7 +1024,7 @@ impl WizardApp {
                 }
                 Some(Err(e)) => {
                     let failed = self.theme.tr("wizard.finish.failed");
-                    badge(ui, false);
+                    badge(ui, false, k);
                     ui.add_space(14.0);
                     ui.heading(RichText::new(&failed).strong());
                     ui.add_space(8.0);
@@ -921,7 +1052,7 @@ impl WizardApp {
                     Some(Ok(())) => {
                         let title = self.theme.tr("wizard.uninstall.title");
                         let done = self.theme.tr("wizard.uninstall.done");
-                        badge(ui, true);
+                        badge(ui, true, k);
                         ui.add_space(14.0);
                         ui.heading(RichText::new(&title).strong());
                         ui.add_space(6.0);
@@ -929,7 +1060,7 @@ impl WizardApp {
                     }
                     Some(Err(e)) => {
                         let failed = self.theme.tr("wizard.finish.failed");
-                        badge(ui, false);
+                        badge(ui, false, k);
                         ui.add_space(14.0);
                         ui.heading(RichText::new(&failed).strong());
                         ui.add_space(8.0);
