@@ -781,7 +781,15 @@ impl WizardApp {
                     if ui.add(self.theme.secondary_button(&browse)).clicked()
                         && let Some(p) = picker::pick_folder()
                     {
-                        self.dir = p.to_string_lossy().into_owned();
+                        // 浏览选中的目录非空时追加应用名子目录，避免把文件散落进
+                        // 既有目录；空目录（含尚不存在）按用户所选原样使用。
+                        // 升级场景不受影响：默认目录不经此处改写。
+                        let target = if dir_has_content(&p) {
+                            p.join(sanitize_dir_name(&self.manifest.app.name))
+                        } else {
+                            p
+                        };
+                        self.dir = target.to_string_lossy().into_owned();
                     }
                 });
                 ui.add_space(14.0);
@@ -963,5 +971,55 @@ fn human(n: u64) -> String {
         format!("{:.1} KB", n as f64 / 1024.0)
     } else {
         format!("{n} B")
+    }
+}
+
+/// 应用名清洗为合法目录名：去除 Windows 路径非法字符，空白兜底为 App。
+fn sanitize_dir_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        "App".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 目录存在且至少含一个条目（不存在或空返回 false）。
+fn dir_has_content(p: &std::path::Path) -> bool {
+    std::fs::read_dir(p)
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_strips_illegal_chars() {
+        assert_eq!(sanitize_dir_name("My App: <v2>?"), "My App v2");
+        assert_eq!(sanitize_dir_name("示例应用"), "示例应用");
+    }
+
+    #[test]
+    fn sanitize_empty_fallback() {
+        assert_eq!(sanitize_dir_name("***"), "App");
+        assert_eq!(sanitize_dir_name("   "), "App");
+    }
+
+    #[test]
+    fn dir_content_check() {
+        let empty = tempfile::tempdir().unwrap();
+        assert!(!dir_has_content(empty.path()));
+        let full = tempfile::tempdir().unwrap();
+        std::fs::write(full.path().join("x.txt"), b"x").unwrap();
+        assert!(dir_has_content(full.path()));
+        assert!(!dir_has_content(std::path::Path::new(
+            "Z:/definitely/not/exist"
+        )));
     }
 }
