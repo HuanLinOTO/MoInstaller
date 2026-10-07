@@ -167,6 +167,10 @@ pub struct Theme {
     /// 显式顺序覆盖；为空时按 pages 顺序。
     #[serde(default)]
     pub page_order: Vec<String>,
+    /// 一键模式：欢迎页内联显示安装路径并提供小文本按钮改目录，
+    /// 导航只保留主按钮（隐藏上一步/取消）。页面序列仍由 pages 决定。
+    #[serde(default)]
+    pub minimal: bool,
 }
 
 fn default_pages() -> Vec<String> {
@@ -420,11 +424,16 @@ impl Manifest {
         if !self.theme.page_order.is_empty() {
             check_pages("theme.page_order", &self.theme.page_order)?;
         }
-        let effective_pages: BTreeSet<&str> = self
-            .theme
-            .pages
-            .iter()
-            .map(|s| s.as_str())
+        // 有效页面序列与 mo-setup 渲染逻辑一致：page_order 显式覆盖 > pages，
+        // 再减 hide_pages。此前只查 pages：清单带 [theme] 表但未显式写 pages 时
+        // pages 默认全集（含 license），即使用 page_order 裁掉了 license 也会误报。
+        let order: Vec<&str> = if self.theme.page_order.is_empty() {
+            self.theme.pages.iter().map(|s| s.as_str()).collect()
+        } else {
+            self.theme.page_order.iter().map(|s| s.as_str()).collect()
+        };
+        let effective_pages: BTreeSet<&str> = order
+            .into_iter()
             .filter(|p| !self.theme.hide_pages.iter().any(|h| h == *p))
             .collect();
         if effective_pages.contains("license") && self.options.license.is_none() {
@@ -632,6 +641,18 @@ dst = "{app}"
             serde_json::to_vec(&m).unwrap(),
             serde_json::to_vec(&m2).unwrap()
         );
+    }
+
+    #[test]
+    fn parse_theme_minimal() {
+        let m = Manifest::from_toml_str(MINIMAL).unwrap();
+        assert!(!m.theme.minimal);
+        let with = MINIMAL.to_string()
+            + "\n[theme]\nminimal = true\npage_order = [\"welcome\", \"install\", \"finish\"]\n";
+        let m = Manifest::from_toml_str(&with).unwrap();
+        assert!(m.theme.minimal);
+        assert_eq!(m.theme.page_order, vec!["welcome", "install", "finish"]);
+        assert!(m.validate().is_ok());
     }
 
     #[test]
