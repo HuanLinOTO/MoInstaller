@@ -3,6 +3,9 @@
 //! 模式分派：--uninstall / mo-uninstall.exe → 卸载（静默或 GUI 确认）；
 //! /SILENT /VERYSILENT → 控制台静默安装；其余 → egui 向导。
 //! 退出码：0 成功；1 致命；2 安装失败（已回滚）；3 磁盘不足；4 钩子错误。
+//!
+//! release 构建为 Windows GUI 子系统：双击启动不会出现 conhost 控制台窗口。
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod gui;
 mod picker;
@@ -64,6 +67,10 @@ fn parse_args(argv: &[String]) -> Args {
 }
 
 fn main() -> ExitCode {
+    // windows 子系统下没有控制台：先把 stdout/stderr 绑到 CONOUT$（有父控制台）
+    // 或 NUL（双击启动），否则 println! 写入失败会在 release（panic=abort）下直接崩。
+    #[cfg(all(windows, not(debug_assertions)))]
+    win_stdio::init();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let args = parse_args(&argv);
     match run(&args) {
@@ -321,4 +328,60 @@ fn uninstall_flow(manifest: &Manifest, exe: &std::path::Path) -> Result<(), Engi
     let log_path = ctx.app_dir.join("mo-install.log");
     let mut executor = Executor::new(bus, ctx, log_path);
     executor.uninstall(manifest, exe)
+}
+
+/// windows 子系统进程的标准句柄修复。
+///
+/// GUI 子系统下双击启动时没有控制台，stdout/stderr 句柄无效；此时任何
+/// println! 写入失败都会 panic（release 下 panic=abort，直接崩溃）。
+/// 1) 从控制台启动（cmd 中跑 /SILENT 等）→ 附加父控制台并把两个标准
+///    输出句柄重定向到 CONOUT$，静默安装的进度仍然可见；
+/// 2) 双击/资源管理器启动 → 重定向到 NUL，输出静默丢弃。
+#[cfg(all(windows, not(debug_assertions)))]
+mod win_stdio {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(dwProcessId: u32) -> i32;
+        fn CreateFileW(
+            lpFileName: *const u16,
+            dwDesiredAccess: u32,
+            dwShareMode: u32,
+            lpSecurityAttributes: *mut core::ffi::c_void,
+            dwCreationDisposition: u32,
+            dwFlagsAndAttributes: u32,
+            hTemplateFile: *mut core::ffi::c_void,
+        ) -> *mut core::ffi::c_void;
+        fn SetStdHandle(nStdHandle: u32, hHandle: *mut core::ffi::c_void) -> i32;
+    }
+
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;
+    const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF6;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    const OPEN_EXISTING: u32 = 3;
+
+    pub fn init() {
+        unsafe {
+            let attached = AttachConsole(ATTACH_PARENT_PROCESS) != 0;
+            let name: Vec<u16> = if attached { "CONOUT$" } else { "NUL" }
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let h = CreateFileW(
+                name.as_ptr(),
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            );
+            if !h.is_null() {
+                SetStdHandle(STD_OUTPUT_HANDLE, h);
+                SetStdHandle(STD_ERROR_HANDLE, h);
+            }
+        }
+    }
 }

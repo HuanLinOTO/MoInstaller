@@ -60,6 +60,10 @@ pub fn builtin(key: &str, lang: Lang) -> Option<&'static str> {
             "本向导将引导您完成安装。",
             "This wizard will guide you through the installation.",
         ),
+        "wizard.welcome.hint" => (
+            "点击「下一步」继续，或点击「取消」退出安装。",
+            "Click Next to continue, or Cancel to exit setup.",
+        ),
         "wizard.license.title" => ("许可协议", "License Agreement"),
         "wizard.license.prompt" => (
             "请阅读以下许可协议。继续安装前您必须接受该协议。",
@@ -74,9 +78,11 @@ pub fn builtin(key: &str, lang: Lang) -> Option<&'static str> {
         "wizard.dir.needspace" => ("所需空间", "Space required"),
         "wizard.dir.freespace" => ("可用空间", "Space available"),
         "wizard.dir.browse" => ("浏览...", "Browse..."),
+        "wizard.dir.installto" => ("安装到", "Install to"),
         "wizard.components.title" => ("选择组件", "Choose Components"),
         "wizard.components.prompt" => ("选择要安装的功能。", "Select features to install."),
         "wizard.components.size" => ("大小", "Size"),
+        "wizard.components.required" => ("（必需）", "(required)"),
         "wizard.install.title" => ("正在安装", "Installing"),
         "wizard.install.wait" => (
             "请稍候，正在安装文件...",

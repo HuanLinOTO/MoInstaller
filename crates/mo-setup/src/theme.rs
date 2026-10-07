@@ -1,7 +1,8 @@
-//! 主题运行时：accent 色板、横幅/侧图纹理、文案覆盖、有效页面序列。
+//! 主题运行时：accent 色板、横幅/侧图纹理、文案覆盖、有效页面序列，
+//! 以及浅色现代样式（字号层级、圆角、按钮外观）。
 
 use crate::strings::{Lang, builtin};
-use egui::{Color32, Context, TextureHandle, TextureOptions};
+use egui::{Color32, Context, RichText, TextureHandle, TextureOptions};
 use mo_core::manifest::Manifest;
 use std::collections::BTreeMap;
 
@@ -104,16 +105,85 @@ impl ThemeRuntime {
         builtin(key, self.lang).unwrap_or(key).to_string()
     }
 
-    /// 应用主题到 egui Context（accent 作为高亮色/进度色）。
+    /// 应用主题：浅色现代风、accent 高亮、字号层级与宽松间距。
     pub fn apply_style(&self, ctx: &Context) {
-        let mut style = (*ctx.style()).clone();
         let a = self.accent;
-        style.visuals.selection.bg_fill = a;
-        style.visuals.widgets.hovered.bg_fill = a;
-        style.visuals.widgets.active.bg_fill = a;
-        style.visuals.widgets.active.weak_bg_fill = a;
-        style.visuals.hyperlink_color = a;
-        ctx.set_style(style);
+        let mut st = (*ctx.style()).clone();
+
+        st.text_styles
+            .insert(egui::TextStyle::Heading, egui::FontId::proportional(24.0));
+        st.text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
+        st.text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
+        st.text_styles
+            .insert(egui::TextStyle::Small, egui::FontId::proportional(12.5));
+        st.text_styles
+            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.0));
+
+        st.spacing.item_spacing = egui::vec2(10.0, 10.0);
+        st.spacing.button_padding = egui::vec2(18.0, 8.0);
+
+        let v = &mut st.visuals;
+        *v = egui::Visuals::light();
+        v.panel_fill = Color32::WHITE;
+        v.window_fill = Color32::WHITE;
+        v.extreme_bg_color = Color32::from_rgb(0xF7, 0xF8, 0xFA);
+        v.faint_bg_color = Color32::from_rgb(0xF2, 0xF4, 0xF7);
+        v.hyperlink_color = a;
+        v.selection.bg_fill = a;
+        v.selection.stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
+        v.error_fg_color = Color32::from_rgb(0xC6, 0x28, 0x28);
+
+        let border = egui::Stroke::new(1.0_f32, Color32::from_rgb(0xD9, 0xDE, 0xE5));
+        let text = egui::Stroke::new(1.2_f32, Color32::from_rgb(0x37, 0x3C, 0x44));
+        for w in [
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+        ] {
+            w.bg_fill = Color32::WHITE;
+            w.bg_stroke = border;
+            w.fg_stroke = text;
+            w.corner_radius = egui::CornerRadius::same(7);
+        }
+        v.widgets.hovered.bg_fill = tint(a, 0.12);
+        v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, a);
+        v.widgets.hovered.fg_stroke = egui::Stroke::new(1.2_f32, a);
+        v.widgets.active.bg_fill = tint(a, 0.20);
+        v.widgets.active.bg_stroke = egui::Stroke::new(1.2_f32, a);
+        v.widgets.active.fg_stroke = egui::Stroke::new(1.2_f32, a);
+        v.widgets.noninteractive.bg_fill = Color32::WHITE;
+        v.widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
+        v.widgets.noninteractive.fg_stroke =
+            egui::Stroke::new(1.1_f32, Color32::from_rgb(0x5A, 0x61, 0x6B));
+        v.widgets.noninteractive.corner_radius = egui::CornerRadius::same(7);
+
+        ctx.set_style(st);
+    }
+
+    /// 主按钮：accent 填充白字，向导主操作（下一步/安装/关闭）。
+    pub fn primary_button(&self, label: impl Into<String>) -> egui::Button<'static> {
+        egui::Button::new(RichText::new(label.into()).color(Color32::WHITE).strong())
+            .fill(self.accent)
+            .stroke(egui::Stroke::NONE)
+            .min_size(egui::vec2(118.0, 36.0))
+            .corner_radius(egui::CornerRadius::same(7))
+    }
+
+    /// 次按钮：白底浅描边（外观来自 apply_style）。
+    pub fn secondary_button(&self, label: impl Into<String>) -> egui::Button<'static> {
+        egui::Button::new(RichText::new(label.into())).min_size(egui::vec2(96.0, 36.0))
+    }
+
+    /// 侧栏底色：accent 压暗，保证白字可读。
+    pub fn sidebar_fill(&self) -> Color32 {
+        let a = self.accent;
+        Color32::from_rgb(
+            (a.r() as u32 * 45 / 100) as u8,
+            (a.g() as u32 * 45 / 100) as u8,
+            (a.b() as u32 * 45 / 100) as u8,
+        )
     }
 }
 
@@ -137,4 +207,9 @@ fn load_texture(ctx: &Context, bytes: Vec<u8>) -> Option<TextureHandle> {
     let (w, h) = img.dimensions();
     let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &img);
     Some(ctx.load_texture("mo-theme", color, TextureOptions::default()))
+}
+
+/// accent 的半透明版（白底上呈浅色高亮）。
+fn tint(c: Color32, alpha: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (alpha * 255.0) as u8)
 }

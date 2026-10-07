@@ -1,11 +1,12 @@
 //! egui 安装向导：欢迎 → 许可 → 目录 → 组件 → 安装 → 完成。
 //!
+//! 布局：左侧品牌栏（accent 压暗底或应用侧图）+ 中央内容区 + 底部按钮条。
 //! 引擎跑在工作线程，经 channel 推送进度；GUI 是事件总线的另一个订阅者视角。
 
 use crate::picker;
 use crate::strings::Lang;
 use crate::theme::{Page, ThemeRuntime};
-use egui::{Layout, RichText};
+use egui::{Color32, Layout, RichText, Sense};
 use mo_core::constants::ConstEnv;
 use mo_core::manifest::Manifest;
 use mo_core::overlay::Package;
@@ -16,6 +17,13 @@ use mo_engine::win::misc;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
+
+const TEXT_SOFT: Color32 = Color32::from_rgb(0x4A, 0x51, 0x5A);
+
+/// 半透明白（侧栏副文案）。
+fn white_a(a: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(255, 255, 255, (a * 255.0) as u8)
+}
 
 /// 安装线程 → UI 的消息。
 pub enum UiMsg {
@@ -315,9 +323,9 @@ fn run_uninstall_thread(
 fn install_cjk_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     for cand in [
-        "C:\\Windows\\Fonts\\msyh.ttc",
-        "C:\\Windows\\Fonts\\simhei.ttf",
-        "C:\\Windows\\Fonts\\simsun.ttc",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/simsun.ttc",
     ] {
         if let Ok(bytes) = std::fs::read(cand) {
             fonts.font_data.insert(
@@ -343,12 +351,18 @@ pub fn run_install_gui(mut app: WizardApp) -> (bool, Option<String>) {
         .window
         .as_ref()
         .map(|w| (w.width as f32, w.height as f32))
-        .unwrap_or((660.0, 460.0));
+        .unwrap_or((800.0, 560.0));
     native.viewport.inner_size = Some(egui::vec2(w, h));
+    native.viewport.min_inner_size = Some(egui::vec2(680.0, 520.0));
+    let title = format!(
+        "{} - {}",
+        app.manifest.app.name,
+        app.theme.tr("wizard.title")
+    );
     let outcome = std::rc::Rc::new(std::cell::RefCell::new((false, None::<String>)));
     let out2 = outcome.clone();
     let _ = eframe::run_native(
-        "mo-setup",
+        &title,
         native,
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
@@ -362,12 +376,10 @@ pub fn run_install_gui(mut app: WizardApp) -> (bool, Option<String>) {
                 app.sidebar_bytes.take(),
             );
             let pages = theme.pages.clone();
-            let lang = theme.lang;
             app.theme = theme;
             if !app.uninstall_mode && !pages.contains(&app.page) {
                 app.page = pages.first().copied().unwrap_or(Page::Install);
             }
-            let _ = lang;
             Ok(Box::new(GuiWrap {
                 app,
                 outcome: GuiOutcome::Install(out2),
@@ -381,11 +393,17 @@ pub fn run_install_gui(mut app: WizardApp) -> (bool, Option<String>) {
 /// 运行卸载 GUI。返回是否成功。
 pub fn run_uninstall_gui(mut app: WizardApp) -> bool {
     let mut native = eframe::NativeOptions::default();
-    native.viewport.inner_size = Some(egui::vec2(520.0, 260.0));
+    native.viewport.inner_size = Some(egui::vec2(600.0, 380.0));
+    native.viewport.min_inner_size = Some(egui::vec2(520.0, 340.0));
+    let title = format!(
+        "{} - {}",
+        app.manifest.app.name,
+        app.theme.tr("wizard.uninstall.title")
+    );
     let outcome = std::rc::Rc::new(std::cell::RefCell::new(false));
     let out2 = outcome.clone();
     let _ = eframe::run_native(
-        "mo-uninstall",
+        &title,
         native,
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
@@ -421,9 +439,11 @@ impl eframe::App for GuiWrap {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.app.poll_install();
         self.app.theme.apply_style(ctx);
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.app.ui(ui);
-        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(Color32::WHITE))
+            .show(ctx, |ui| {
+                self.app.ui(ui);
+            });
         if self.app.closed {
             match &self.outcome {
                 GuiOutcome::Install(o) => {
@@ -449,6 +469,24 @@ impl eframe::App for GuiWrap {
     }
 }
 
+/// 成功/失败大徽章：圆形底色 + 对勾/叉。
+fn badge(ui: &mut egui::Ui, ok: bool) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(56.0, 56.0), Sense::hover());
+    let (fill, mark) = if ok {
+        (Color32::from_rgb(0x2E, 0xA0, 0x4E), "\u{2713}")
+    } else {
+        (Color32::from_rgb(0xD8, 0x3A, 0x3A), "\u{2715}")
+    };
+    ui.painter().circle_filled(rect.center(), 28.0, fill);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        mark,
+        egui::FontId::proportional(30.0),
+        Color32::WHITE,
+    );
+}
+
 impl WizardApp {
     fn theme_env(&self) -> ConstEnv {
         ConstEnv::from_process_env()
@@ -456,40 +494,142 @@ impl WizardApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) {
-        let banner_h = self.theme.banner.as_ref().map(|t| {
-            let size = t.size_vec2();
-            let scale = ui.available_width() / size.x;
-            size.y * scale
-        });
-        let has_sidebar = self.theme.sidebar.is_some();
+        // —— 左侧品牌栏（卸载窗口不显示）——
+        let side_w = if self.uninstall_mode { 0.0 } else { 176.0 };
         egui::SidePanel::left("mo-sidebar")
-            .min_width(0.0)
-            .max_width(if has_sidebar { 160.0 } else { 0.0 })
+            .exact_width(side_w)
+            .frame(egui::Frame::NONE.fill(self.theme.sidebar_fill()))
             .show_inside(ui, |ui| {
-                if let Some(tex) = &self.theme.sidebar {
-                    let size = tex.size_vec2();
-                    let scale = (ui.available_width() / size.x).min(ui.available_height() / size.y);
-                    ui.image((tex.id(), size * scale));
+                if side_w > 0.0 {
+                    self.sidebar(ui);
                 }
             });
-        egui::TopBottomPanel::top("mo-banner")
-            .exact_height(banner_h.unwrap_or(0.0))
-            .show_inside(ui, |ui| {
-                if let Some(tex) = &self.theme.banner {
-                    let size = tex.size_vec2();
-                    let scale = ui.available_width() / size.x;
-                    ui.image((tex.id(), size * scale));
-                }
-            });
+
+        // —— 底部按钮条：白底 + 上分隔线 ——
         egui::TopBottomPanel::bottom("mo-buttons")
-            .exact_height(44.0)
+            .exact_height(60.0)
+            .frame(egui::Frame::NONE.fill(Color32::WHITE))
             .show_inside(ui, |ui| {
+                let r = ui.available_rect_before_wrap();
+                ui.painter().hline(
+                    r.left()..=r.right(),
+                    r.top(),
+                    egui::Stroke::new(1.0_f32, Color32::from_rgb(0xE4, 0xE7, 0xEC)),
+                );
                 ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(14.0);
                     self.buttons(ui);
                 });
             });
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            self.page_body(ui);
+
+        // —— 中央内容区 ——
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(Color32::WHITE))
+            .show_inside(ui, |ui| {
+                // banner（包内提供时）：cover 铺满、封顶 160px
+                if let Some(tex) = self.theme.banner.clone() {
+                    let size = tex.size_vec2();
+                    let w = ui.available_width();
+                    let scale = w / size.x;
+                    let full_h = size.y * scale;
+                    let h = full_h.min(160.0);
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), Sense::hover());
+                    let uv = if full_h > h {
+                        let cut = (1.0 - h / full_h) / 2.0;
+                        egui::Rect::from_min_max(egui::pos2(0.0, cut), egui::pos2(1.0, 1.0 - cut))
+                    } else {
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
+                    };
+                    ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
+                    ui.add_space(10.0);
+                }
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin {
+                        left: 30,
+                        right: 30,
+                        top: 24,
+                        bottom: 12,
+                    })
+                    .show(ui, |ui| {
+                        self.page_body(ui);
+                    });
+            });
+    }
+
+    /// 品牌栏：应用侧图铺满；否则手绘（首字母徽标 + 名称/版本/发行商）。
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
+        if let Some(tex) = self.theme.sidebar.clone() {
+            let rect = ui.available_rect_before_wrap();
+            ui.allocate_rect(rect, Sense::hover());
+            let size = tex.size_vec2();
+            let scale = (rect.width() / size.x).max(rect.height() / size.y);
+            let disp = size * scale;
+            let r = egui::Rect::from_center_size(rect.center(), disp);
+            ui.painter().image(
+                tex.id(),
+                r,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+            return;
+        }
+        let fill = self.theme.sidebar_fill();
+        let name = self.manifest.app.name.clone();
+        let version = self.manifest.app.version.clone();
+        let publisher = self.manifest.app.publisher.clone();
+
+        ui.add_space(30.0);
+        ui.horizontal(|ui| {
+            ui.add_space(22.0);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(52.0, 52.0), Sense::hover());
+            ui.painter()
+                .rect_filled(rect, egui::CornerRadius::same(13), Color32::WHITE);
+            let ch = name
+                .chars()
+                .next()
+                .map(|c| c.to_string().to_uppercase())
+                .unwrap_or_else(|| "M".into());
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                ch,
+                egui::FontId::proportional(24.0),
+                fill,
+            );
+        });
+        ui.add_space(18.0);
+        ui.horizontal(|ui| {
+            ui.add_space(22.0);
+            ui.vertical(|ui| {
+                ui.set_max_width(128.0);
+                ui.label(
+                    RichText::new(&name)
+                        .color(Color32::WHITE)
+                        .size(17.0)
+                        .strong(),
+                );
+                ui.add_space(3.0);
+                ui.label(
+                    RichText::new(format!("v{version}"))
+                        .color(white_a(0.72))
+                        .size(12.5),
+                );
+                if !publisher.is_empty() {
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(&publisher).color(white_a(0.58)).size(12.0));
+                }
+            });
+        });
+        ui.with_layout(Layout::bottom_up(egui::Align::LEFT), |ui| {
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                ui.add_space(22.0);
+                ui.label(
+                    RichText::new("Powered by MoInstaller")
+                        .color(white_a(0.42))
+                        .size(11.0),
+                );
+            });
         });
     }
 
@@ -501,60 +641,51 @@ impl WizardApp {
         let next_label_uninstall = self.theme.tr("wizard.btn.uninstall");
         match self.page {
             Page::Install if !self.uninstall_mode => {
-                if ui.button(&cancel_label).clicked() {
+                if ui.add(self.theme.secondary_button(&cancel_label)).clicked() {
                     self.closed = true;
                 }
             }
             Page::Finish => {
                 if self.uninstall_mode && self.result.is_none() {
-                    // 卸载确认页：卸载 / 取消
                     if ui
-                        .button(egui::RichText::new(&next_label_uninstall).strong())
+                        .add(self.theme.primary_button(&next_label_uninstall))
                         .clicked()
                     {
                         self.start_uninstall();
                     }
-                    if ui.button(&cancel_label).clicked() {
+                    if ui.add(self.theme.secondary_button(&cancel_label)).clicked() {
                         self.closed = true;
                     }
                 } else {
                     let close_label = self.theme.tr("wizard.btn.close");
-                    if ui.button(&close_label).clicked() {
+                    if ui.add(self.theme.primary_button(&close_label)).clicked() {
                         self.closed = true;
                     }
                 }
             }
             _ => {
                 let next_label = match self.next_page() {
-                    Some(Page::Install) => {
-                        if self.uninstall_mode {
-                            next_label_uninstall.clone()
-                        } else {
-                            next_label_install.clone()
-                        }
-                    }
+                    Some(Page::Install) if !self.uninstall_mode => next_label_install.clone(),
+                    Some(Page::Install) => next_label_uninstall.clone(),
                     _ => next_label_next.clone(),
                 };
                 let can_next = self.can_proceed();
-                if ui
-                    .add_enabled(
-                        can_next,
-                        egui::Button::new(RichText::new(&next_label).strong()),
-                    )
-                    .clicked()
-                {
+                let clicked_next = ui
+                    .add_enabled(can_next, self.theme.primary_button(&next_label))
+                    .clicked();
+                if clicked_next {
                     if self.next_page() == Some(Page::Install) && !self.uninstall_mode {
                         self.start_install();
                     } else if let Some(p) = self.next_page() {
                         self.page = p;
                     }
                 }
-                if ui.button(&back_label).clicked()
+                if ui.add(self.theme.secondary_button(&back_label)).clicked()
                     && let Some(p) = self.prev_page()
                 {
                     self.page = p;
                 }
-                if ui.button(&cancel_label).clicked() {
+                if ui.add(self.theme.secondary_button(&cancel_label)).clicked() {
                     self.closed = true;
                 }
             }
@@ -570,139 +701,252 @@ impl WizardApp {
     }
 
     fn page_body(&mut self, ui: &mut egui::Ui) {
-        let t = &self.theme;
+        let accent = self.theme.accent;
         match self.page {
             Page::Welcome => {
-                ui.heading(t.tr("wizard.welcome.title"));
-                ui.add_space(8.0);
+                let title = self.theme.tr("wizard.welcome.title");
+                let text = self.theme.tr("wizard.welcome.text");
+                let hint = self.theme.tr("wizard.welcome.hint");
+                let name = self.manifest.app.name.clone();
+                let version = self.manifest.app.version.clone();
+                let publisher = self.manifest.app.publisher.clone();
+
+                ui.heading(RichText::new(&title).strong());
+                ui.add_space(12.0);
                 ui.label(
-                    RichText::new(format!(
-                        "{} {} ({})",
-                        self.manifest.app.name,
-                        self.manifest.app.version,
-                        self.manifest.app.publisher
-                    ))
-                    .strong(),
+                    RichText::new(format!("{name} {version}"))
+                        .size(19.0)
+                        .strong()
+                        .color(accent),
                 );
-                ui.add_space(6.0);
-                ui.label(t.tr("wizard.welcome.text"));
+                if !publisher.is_empty() {
+                    ui.label(RichText::new(&publisher).weak());
+                }
+                ui.add_space(10.0);
+                ui.label(RichText::new(&text).size(15.0).color(TEXT_SOFT));
+                ui.add_space(22.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.label(RichText::new(&hint).weak());
             }
             Page::License => {
-                ui.heading(t.tr("wizard.license.title"));
+                let title = self.theme.tr("wizard.license.title");
+                let prompt = self.theme.tr("wizard.license.prompt");
+                let accept = self.theme.tr("wizard.license.accept");
+                ui.heading(RichText::new(&title).strong());
                 ui.add_space(6.0);
-                ui.label(t.tr("wizard.license.prompt"));
-                ui.add_space(4.0);
+                ui.label(RichText::new(&prompt).weak());
+                ui.add_space(12.0);
+                let avail = ui.available_height() - 60.0;
                 egui::ScrollArea::vertical()
-                    .max_height(ui.available_height() - 34.0)
+                    .id_salt("mo-license-scroll")
+                    .max_height(avail.max(80.0))
                     .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.license_text.as_str())
-                                .desired_width(f32::INFINITY)
-                                .interactive(false),
-                        );
+                        egui::Frame::NONE
+                            .fill(Color32::from_rgb(0xFA, 0xFB, 0xFC))
+                            .stroke(egui::Stroke::new(
+                                1.0_f32,
+                                Color32::from_rgb(0xE2, 0xE6, 0xEC),
+                            ))
+                            .corner_radius(egui::CornerRadius::same(8))
+                            .inner_margin(egui::Margin::same(12))
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut self.license_text.as_str())
+                                        .desired_width(f32::INFINITY)
+                                        .frame(false)
+                                        .interactive(false),
+                                );
+                            });
                     });
-                ui.checkbox(&mut self.license_accepted, t.tr("wizard.license.accept"));
+                ui.add_space(10.0);
+                ui.checkbox(&mut self.license_accepted, &accept);
             }
             Page::Dir => {
-                ui.heading(t.tr("wizard.dir.title"));
+                let title = self.theme.tr("wizard.dir.title");
+                let prompt = self.theme.tr("wizard.dir.prompt");
+                let browse = self.theme.tr("wizard.dir.browse");
+                let free_lbl = self.theme.tr("wizard.dir.freespace");
+                let to_lbl = self.theme.tr("wizard.dir.installto");
+                ui.heading(RichText::new(&title).strong());
                 ui.add_space(6.0);
-                ui.label(t.tr("wizard.dir.prompt"));
-                ui.add_space(8.0);
+                ui.label(RichText::new(&prompt).weak());
+                ui.add_space(14.0);
                 ui.horizontal(|ui| {
-                    let edit = egui::TextEdit::singleline(&mut self.dir)
-                        .desired_width(ui.available_width() - 90.0);
-                    ui.add(edit);
-                    if ui.button(t.tr("wizard.dir.browse")).clicked()
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.dir)
+                            .desired_width(ui.available_width() - 104.0)
+                            .clip_text(true),
+                    );
+                    if ui.add(self.theme.secondary_button(&browse)).clicked()
                         && let Some(p) = picker::pick_folder()
                     {
                         self.dir = p.to_string_lossy().into_owned();
                     }
                 });
-                if let Ok(free) = misc::disk_free_bytes(std::path::Path::new(&self.dir)) {
-                    ui.add_space(8.0);
-                    ui.label(format!("{}: {}", t.tr("wizard.dir.freespace"), human(free)));
-                }
+                ui.add_space(14.0);
+                let free = misc::disk_free_bytes(std::path::Path::new(&self.dir)).ok();
+                let dir_disp = self.dir.clone();
+                egui::Frame::NONE
+                    .fill(Color32::from_rgb(0xF7, 0xF8, 0xFA))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(14, 10))
+                    .show(ui, |ui| {
+                        if let Some(f) = free {
+                            ui.label(RichText::new(format!("{free_lbl}: {}", human(f))).size(13.5));
+                        }
+                        ui.label(
+                            RichText::new(format!("{to_lbl}: {dir_disp}"))
+                                .size(13.5)
+                                .weak(),
+                        );
+                    });
             }
             Page::Components => {
-                ui.heading(t.tr("wizard.components.title"));
+                let title = self.theme.tr("wizard.components.title");
+                let prompt = self.theme.tr("wizard.components.prompt");
+                let req_lbl = self.theme.tr("wizard.components.required");
+                ui.heading(RichText::new(&title).strong());
                 ui.add_space(6.0);
-                ui.label(t.tr("wizard.components.prompt"));
-                ui.add_space(8.0);
-                let comps = self.manifest.components.clone();
-                for c in comps {
-                    let on = self
-                        .components
-                        .entry(c.id.clone())
-                        .or_insert(c.default_selected());
-                    let mut v = *on;
-                    ui.add_enabled(!c.required, egui::Checkbox::new(&mut v, &c.name));
-                    *on = v || c.required;
+                ui.label(RichText::new(&prompt).weak());
+                ui.add_space(12.0);
+                let comps: Vec<(String, String, bool, bool)> = self
+                    .manifest
+                    .components
+                    .iter()
+                    .map(|c| (c.id.clone(), c.name.clone(), c.required, c.default))
+                    .collect();
+                for (id, name, required, default) in comps {
+                    ui.horizontal(|ui| {
+                        let on = self.components.entry(id).or_insert(default);
+                        let mut v = *on;
+                        ui.add_enabled(!required, egui::Checkbox::new(&mut v, ""));
+                        *on = v || required;
+                        ui.label(RichText::new(&name).strong().size(14.5));
+                        if required {
+                            ui.label(RichText::new(&req_lbl).weak().size(12.0));
+                        }
+                    });
+                    ui.add_space(4.0);
                 }
             }
             Page::Install => {
-                ui.heading(t.tr("wizard.install.title"));
-                ui.add_space(6.0);
+                let title = self.theme.tr("wizard.install.title");
+                let wait = self.theme.tr("wizard.install.wait");
+                ui.heading(RichText::new(&title).strong());
+                ui.add_space(4.0);
+                ui.label(RichText::new(&wait).weak());
+                ui.add_space(26.0);
                 let frac = if self.progress.files_total > 0 {
                     self.progress.files_done as f32 / self.progress.files_total as f32
                 } else {
                     0.0
                 };
-                let bar = egui::ProgressBar::new(frac.clamp(0.0, 1.0)).text(format!(
-                    "{} / {}",
-                    self.progress.files_done, self.progress.files_total
-                ));
-                ui.add(bar);
-                ui.add_space(6.0);
-                ui.label(format!(
-                    "[{}] {}",
-                    self.progress.step, self.progress.current_file
-                ));
+                let pct = (frac * 100.0).round() as i32;
+                ui.label(
+                    RichText::new(format!("{pct}%"))
+                        .size(36.0)
+                        .strong()
+                        .color(accent),
+                );
+                ui.add_space(8.0);
+                ui.add_sized(
+                    [ui.available_width(), 14.0],
+                    egui::ProgressBar::new(frac.clamp(0.0, 1.0))
+                        .fill(accent)
+                        .text(format!(
+                            "{} / {}",
+                            self.progress.files_done, self.progress.files_total
+                        )),
+                );
+                ui.add_space(16.0);
+                let step = self.progress.step.clone();
+                let file = self.progress.current_file.clone();
+                ui.label(RichText::new(&step).strong().size(13.5));
+                ui.add(
+                    egui::Label::new(RichText::new(&file).weak().size(12.0).monospace()).truncate(),
+                );
             }
-            Page::Finish => {
-                if self.uninstall_mode {
-                    ui.heading(t.tr("wizard.uninstall.title"));
-                    match &self.result {
-                        Some(Ok(())) => {
-                            ui.label(t.tr("wizard.uninstall.done"));
-                        }
-                        Some(Err(e)) => {
-                            ui.label(format!("{}\n{}", t.tr("wizard.finish.failed"), e.message()));
-                        }
-                        None => {
-                            ui.label(t.tr("wizard.uninstall.confirm"));
-                            ui.add_space(8.0);
-                            ui.checkbox(
-                                &mut self.uninstall_keep,
-                                t.tr("wizard.uninstall.keepdata"),
-                            );
-                        }
+            Page::Finish if !self.uninstall_mode => match &self.result {
+                Some(Ok(())) => {
+                    let title = self.theme.tr("wizard.finish.title");
+                    let text = self.theme.tr("wizard.finish.text");
+                    badge(ui, true);
+                    ui.add_space(14.0);
+                    ui.heading(RichText::new(&title).strong());
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(&text).size(15.0).color(TEXT_SOFT));
+                    if self.manifest.run.after.is_some() {
+                        ui.add_space(12.0);
+                        let run_lbl = self.theme.tr("wizard.finish.run");
+                        let name = self.manifest.app.name.clone();
+                        ui.checkbox(&mut self.run_after, format!("{run_lbl} {name}"));
                     }
-                } else {
-                    match &self.result {
-                        Some(Ok(())) => {
-                            ui.heading(t.tr("wizard.finish.title"));
-                            ui.add_space(6.0);
-                            ui.label(t.tr("wizard.finish.text"));
-                            if self.manifest.run.after.is_some() {
-                                ui.add_space(8.0);
-                                ui.checkbox(
-                                    &mut self.run_after,
-                                    format!(
-                                        "{} {}",
-                                        t.tr("wizard.finish.run"),
-                                        self.manifest.app.name
-                                    ),
+                }
+                Some(Err(e)) => {
+                    let failed = self.theme.tr("wizard.finish.failed");
+                    badge(ui, false);
+                    ui.add_space(14.0);
+                    ui.heading(RichText::new(&failed).strong());
+                    ui.add_space(8.0);
+                    let msg = e.message().to_string();
+                    egui::Frame::NONE
+                        .fill(Color32::from_rgb(0xFC, 0xEC, 0xEC))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .inner_margin(egui::Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(&msg)
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(0x9E, 0x2B, 0x2B)),
+                            );
+                        });
+                }
+                None => {
+                    let title = self.theme.tr("wizard.install.title");
+                    ui.heading(RichText::new(&title).strong());
+                }
+            },
+            Page::Finish => {
+                // 卸载模式
+                match &self.result {
+                    Some(Ok(())) => {
+                        let title = self.theme.tr("wizard.uninstall.title");
+                        let done = self.theme.tr("wizard.uninstall.done");
+                        badge(ui, true);
+                        ui.add_space(14.0);
+                        ui.heading(RichText::new(&title).strong());
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(&done).size(15.0).color(TEXT_SOFT));
+                    }
+                    Some(Err(e)) => {
+                        let failed = self.theme.tr("wizard.finish.failed");
+                        badge(ui, false);
+                        ui.add_space(14.0);
+                        ui.heading(RichText::new(&failed).strong());
+                        ui.add_space(8.0);
+                        let msg = e.message().to_string();
+                        egui::Frame::NONE
+                            .fill(Color32::from_rgb(0xFC, 0xEC, 0xEC))
+                            .corner_radius(egui::CornerRadius::same(8))
+                            .inner_margin(egui::Margin::same(12))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(&msg)
+                                        .size(13.0)
+                                        .color(Color32::from_rgb(0x9E, 0x2B, 0x2B)),
                                 );
-                            }
-                        }
-                        Some(Err(e)) => {
-                            ui.heading(t.tr("wizard.finish.failed"));
-                            ui.add_space(6.0);
-                            ui.label(e.message());
-                        }
-                        None => {
-                            ui.heading(t.tr("wizard.install.title"));
-                        }
+                            });
+                    }
+                    None => {
+                        let title = self.theme.tr("wizard.uninstall.title");
+                        let confirm = self.theme.tr("wizard.uninstall.confirm");
+                        let keep = self.theme.tr("wizard.uninstall.keepdata");
+                        ui.heading(RichText::new(&title).strong());
+                        ui.add_space(10.0);
+                        ui.label(RichText::new(&confirm).size(15.0).color(TEXT_SOFT));
+                        ui.add_space(14.0);
+                        ui.checkbox(&mut self.uninstall_keep, &keep);
                     }
                 }
             }
