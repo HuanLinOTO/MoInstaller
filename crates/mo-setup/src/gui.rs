@@ -285,8 +285,9 @@ fn run_install_thread(
     let mut pkg =
         Package::open(&exe).map_err(|e| EngineError::Fatal(format!("解析安装包: {e}")))?;
 
-    let _mutex = misc::SingleInstance::new(&format!("MoInstaller.{}", manifest.app.id))
-        .ok_or_else(|| EngineError::Fatal("安装程序已在运行".into()))?;
+    // 单实例互斥由入口（main.rs GUI 分支）持有；此处若再次创建同名互斥，
+    // v0.2.6 起 GetLastError 会正确报 ERROR_ALREADY_EXISTS，导致 GUI 安装
+    // 一启动就以「安装程序已在运行」失败。
 
     let base_env = ConstEnv::from_process_env();
     let env = base_env.with_app(&target, &manifest.app.name);
@@ -375,9 +376,17 @@ pub fn run_install_gui(mut app: WizardApp) -> (bool, Option<String>) {
         .window
         .as_ref()
         .map(|w| (w.width as f32, w.height as f32))
-        .unwrap_or((800.0, 560.0));
+        .unwrap_or(if app.theme.minimal {
+            (520.0, 330.0)
+        } else {
+            (800.0, 560.0)
+        });
     native.viewport.inner_size = Some(egui::vec2(w, h));
-    native.viewport.min_inner_size = Some(egui::vec2(680.0, 520.0));
+    native.viewport.min_inner_size = Some(if app.theme.minimal {
+        egui::vec2(470.0, 300.0)
+    } else {
+        egui::vec2(680.0, 520.0)
+    });
     let title = format!(
         "{} - {}",
         app.manifest.app.name,
@@ -629,8 +638,12 @@ impl WizardApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) {
-        // —— 左侧品牌栏（卸载窗口不显示）——
-        let side_w = if self.uninstall_mode { 0.0 } else { 176.0 };
+        // —— 左侧品牌栏（卸载窗口与一键模式不显示）——
+        let side_w = if self.uninstall_mode || self.theme.minimal {
+            0.0
+        } else {
+            176.0
+        };
         egui::SidePanel::left("mo-sidebar")
             .exact_width(side_w)
             .frame(egui::Frame::NONE.fill(self.theme.sidebar_fill()))
@@ -686,7 +699,14 @@ impl WizardApp {
                         bottom: 12,
                     })
                     .show(ui, |ui| {
-                        self.page_body(ui);
+                        if self.theme.minimal && !self.uninstall_mode {
+                            // 一键模式：单栏居中排版。
+                            ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
+                                self.page_body(ui);
+                            });
+                        } else {
+                            self.page_body(ui);
+                        }
                     });
             });
     }
@@ -817,13 +837,16 @@ impl WizardApp {
                         self.set_page(p);
                     }
                 }
-                if ui.add(self.theme.secondary_button(&back_label)).clicked()
-                    && let Some(p) = self.prev_page()
-                {
-                    self.set_page(p);
-                }
-                if ui.add(self.theme.secondary_button(&cancel_label)).clicked() {
-                    self.closed = true;
+                // 一键模式：导航只保留主按钮。
+                if !self.theme.minimal {
+                    if ui.add(self.theme.secondary_button(&back_label)).clicked()
+                        && let Some(p) = self.prev_page()
+                    {
+                        self.set_page(p);
+                    }
+                    if ui.add(self.theme.secondary_button(&cancel_label)).clicked() {
+                        self.closed = true;
+                    }
                 }
             }
         }
@@ -848,6 +871,55 @@ impl WizardApp {
         ui.set_opacity(k);
         let accent = self.theme.accent;
         match self.page {
+            Page::Welcome if self.theme.minimal => {
+                // 极简欢迎页：logo + 应用名 + 路径行，说明性文案全部省略。
+                let name = self.manifest.app.name.clone();
+                let version = self.manifest.app.version.clone();
+                let change_dir = self.theme.tr("wizard.welcome.change_dir");
+                let to_lbl = self.theme.tr("wizard.dir.installto");
+                let dir_disp = self.dir.clone();
+
+                let drift = (1.0 - k) * 14.0;
+                let (lrect, _) = ui.allocate_exact_size(egui::vec2(56.0, 56.0), Sense::hover());
+                let lrect = lrect.translate(egui::vec2(0.0, -drift));
+                draw_install_logo(ui, lrect, accent);
+                ui.add_space(16.0);
+                ui.heading(
+                    RichText::new(format!("{name} {version}"))
+                        .strong()
+                        .size(22.0),
+                );
+                ui.add_space(26.0);
+                egui::Frame::NONE
+                    .fill(Color32::from_rgb(0xF7, 0xF8, 0xFA))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(14, 9))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(format!("{to_lbl}  {dir_disp}"))
+                                .size(13.0)
+                                .weak(),
+                        );
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(&change_dir).size(12.5).color(accent),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                            && let Some(p) = picker::pick_folder()
+                        {
+                            // 与 Dir 页浏览一致：非空目录追加应用名子目录。
+                            let target = if dir_has_content(&p) {
+                                p.join(sanitize_dir_name(&self.manifest.app.name))
+                            } else {
+                                p
+                            };
+                            self.dir = target.to_string_lossy().into_owned();
+                        }
+                    });
+            }
             Page::Welcome => {
                 let title = self.theme.tr("wizard.welcome.title");
                 let text = self.theme.tr("wizard.welcome.text");
