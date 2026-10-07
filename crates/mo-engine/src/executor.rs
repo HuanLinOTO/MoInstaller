@@ -532,7 +532,12 @@ impl Executor {
             .collect();
         // 每目录一条独立命令：cmd 的 || 右侧会吞掉后续 & 子句，
         // 链式拼接会在首目录删除成功时短路跳过其余目录。
+        // 已消失的目录直接跳过——捆绑 Python 树会记录成百上千个目录，
+        // 逐目录 spawn 进程会形成进程风暴。
         for d in &created_dirs {
+            if !std::path::Path::new(d).exists() {
+                continue;
+            }
             let cmd = format!(
                 "/c ping -n 3 127.0.0.1 >nul & rmdir \"{d}\" & ping -n 2 127.0.0.1 >nul & rmdir \"{d}\""
             );

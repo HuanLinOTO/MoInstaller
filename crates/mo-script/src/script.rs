@@ -110,6 +110,12 @@ mod fs_api {
             }
             std::fs::remove_dir_all(path).is_ok()
         }
+        pub fn create_dir(&self, path: &str) -> bool {
+            if !self.guard_app(path) {
+                return false;
+            }
+            std::fs::create_dir_all(path).is_ok()
+        }
     }
 }
 
@@ -205,6 +211,9 @@ impl ScriptHost {
         });
         engine.register_fn("delete_dir", |c: &mut ScriptCtx, path: &str| {
             c.delete_dir(path)
+        });
+        engine.register_fn("create_dir", |c: &mut ScriptCtx, path: &str| {
+            c.create_dir(path)
         });
         engine.register_fn("set_progress", |c: &mut ScriptCtx, pct: f64, msg: &str| {
             c.host(|h| h.set_progress(pct, msg));

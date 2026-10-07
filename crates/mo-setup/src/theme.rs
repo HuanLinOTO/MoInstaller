@@ -60,12 +60,18 @@ impl ThemeRuntime {
         let banner = banner_bytes.and_then(|b| load_texture(ctx, b));
         let sidebar = sidebar_bytes.and_then(|b| load_texture(ctx, b));
 
-        // 页面序列：pages - hide_pages；license 页无许可文件则隐藏；components 无组件则隐藏
+        // 页面序列：page_order 显式覆盖 > pages；再减 hide_pages；
+        // license 页无许可文件则隐藏；components 无组件则隐藏
         let has_license = manifest.options.license.is_some();
         let has_components = !manifest.components.is_empty();
         let hidden: Vec<String> = manifest.theme.hide_pages.clone();
+        let order: Vec<String> = if manifest.theme.page_order.is_empty() {
+            manifest.theme.pages.clone()
+        } else {
+            manifest.theme.page_order.clone()
+        };
         let mut pages = Vec::new();
-        for name in &manifest.theme.pages {
+        for name in &order {
             if hidden.iter().any(|h| h == name) {
                 continue;
             }

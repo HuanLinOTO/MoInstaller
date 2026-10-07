@@ -47,11 +47,56 @@ pub fn is_elevated() -> bool {
     }
 }
 
-/// 以管理员重启自身（UAC 弹窗）。成功后调用方应立即退出。
+/// Windows 命令行参数引用：还原 CommandLineToArgvW 的切分边界。
+/// 含空格/制表/引号的参数必须加引号并对反斜杠-引号序列做转义，
+/// 否则 `/DIR=D:\My Apps\Pymss` 在提权重启后会被拆成 `D:\My`。
+fn quote_arg(s: &str) -> String {
+    if s.is_empty() {
+        return "\"\"".into();
+    }
+    if !s.contains([' ', '\t', '"']) {
+        return s.to_string();
+    }
+    let mut out = String::from("\"");
+    let mut backslashes = 0usize;
+    for c in s.chars() {
+        match c {
+            '\\' => {
+                backslashes += 1;
+                out.push('\\');
+            }
+            '"' => {
+                for _ in 0..=backslashes {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push('"');
+            }
+            _ => {
+                backslashes = 0;
+                out.push(c);
+            }
+        }
+    }
+    for _ in 0..=backslashes {
+        out.push('\\');
+    }
+    out.push('"');
+    out
+}
+
+fn quoted_params(args: &[String]) -> String {
+    args.iter()
+        .map(|a| quote_arg(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 以管理员重启自身（UAC 弹窗，不等待）。成功后调用方应立即退出。
 pub fn relaunch_elevated(exe: &Path, args: &[String]) -> Result<(), String> {
     let verb = to_wide("runas");
     let file = to_wide(&exe.to_string_lossy());
-    let params_w = to_wide(&args.join(" "));
+    let params_w = to_wide(&quoted_params(args));
     let r = unsafe {
         ShellExecuteW(
             None,
@@ -69,6 +114,43 @@ pub fn relaunch_elevated(exe: &Path, args: &[String]) -> Result<(), String> {
     }
 }
 
+/// 静默模式的提权重启：等待提权子进程结束并返回其退出码。
+/// ShellExecuteW 不等待子进程，部署脚本会在安装真正完成前拿到假成功。
+pub fn relaunch_elevated_wait(exe: &Path, args: &[String]) -> Result<Option<i32>, String> {
+    use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+    use windows::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
+
+    let verb = to_wide("runas");
+    let file = to_wide(&exe.to_string_lossy());
+    let params_w = to_wide(&quoted_params(args));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params_w.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    unsafe {
+        if ShellExecuteExW(&mut info).is_ok() {
+            if info.hProcess.is_invalid() {
+                return Ok(None); // 已提权重启等价场景，无句柄可等
+            }
+            let _ = WaitForSingleObject(info.hProcess, u32::MAX);
+            let mut code: u32 = 0;
+            if GetExitCodeProcess(info.hProcess, &mut code).is_ok() {
+                let _ = CloseHandle(info.hProcess);
+                return Ok(Some(code as i32));
+            }
+            let _ = CloseHandle(info.hProcess);
+            Ok(None)
+        } else {
+            Err("ShellExecuteExW runas 失败".into())
+        }
+    }
+}
+
 /// 单实例互斥体 guard。已存在同名互斥体时返回 None。
 pub struct SingleInstance {
     handle: HANDLE,
@@ -79,9 +161,16 @@ impl SingleInstance {
         let full = format!("Global\\{name}");
         let w = to_wide(&full);
         unsafe {
+            // CreateMutexW 在同名互斥体已存在时同样返回有效句柄，
+            // 「已存在」只通过 GetLastError 报告——成功分支必须立即检查。
             match CreateMutexW(None, false, PCWSTR(w.as_ptr())) {
-                Ok(h) => Some(SingleInstance { handle: h }),
-                Err(e) if e.code().0 == ERROR_ALREADY_EXISTS.0 as i32 => None,
+                Ok(h) => {
+                    if windows::Win32::Foundation::GetLastError() == ERROR_ALREADY_EXISTS {
+                        let _ = CloseHandle(h);
+                        return None;
+                    }
+                    Some(SingleInstance { handle: h })
+                }
                 Err(_) => None,
             }
         }

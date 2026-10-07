@@ -99,6 +99,21 @@ fn run(args: &Args) -> Result<(), EngineError> {
     let silent = args.silent || args.verysilent;
 
     if args.uninstall || is_uninstaller {
+        // 卸载同样需要管理员：Program Files 安装与 HKLM 卸载键都要求提权，
+        // 否则删除静默失败却报告成功。
+        if manifest.options.require_admin && !misc::is_elevated() {
+            if silent {
+                let code = misc::relaunch_elevated_wait(&exe, &args.raw)
+                    .map_err(|e| fatal(format!("需要管理员权限，重启失败: {e}")))?;
+                return match code {
+                    Some(c) if c != 0 => Err(fatal(format!("提权卸载退出码: {c}"))),
+                    _ => Ok(()),
+                };
+            }
+            misc::relaunch_elevated(&exe, &args.raw)
+                .map_err(|e| fatal(format!("需要管理员权限，重启失败: {e}")))?;
+            return Ok(()); // 新进程接手
+        }
         if silent {
             return uninstall_flow(&manifest, &exe);
         }
@@ -197,25 +212,38 @@ impl mo_script::HostApi for RealHost {
 }
 
 /// 读取脚本源：__mo__/setup.rhai（文件方式）或 manifest 内联。
-pub(crate) fn script_source(manifest: &Manifest, pkg: &mut Package) -> Option<String> {
-    let sc = manifest.script.as_ref()?;
+/// 配置了 file 却取不到/读不动时返回 Err——静默降级为「无脚本」会绕过
+/// before_file 安全规则，必须视为致命错误。
+pub(crate) fn script_source(
+    manifest: &Manifest,
+    pkg: &mut Package,
+) -> Result<Option<String>, EngineError> {
+    let Some(sc) = manifest.script.as_ref() else {
+        return Ok(None);
+    };
     match (&sc.file, &sc.inline) {
         (Some(_), _) => {
-            let e = pkg.entry("__mo__/setup.rhai")?.clone();
-            Some(String::from_utf8_lossy(&pkg.read_entry(&e).ok()?).into_owned())
+            let e = pkg
+                .entry("__mo__/setup.rhai")
+                .cloned()
+                .ok_or_else(|| fatal("清单声明 setup.rhai 但包内缺失"))?;
+            let bytes = pkg
+                .read_entry(&e)
+                .map_err(|e| fatal(format!("读取 setup.rhai: {e}")))?;
+            Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
         }
-        (None, Some(inline)) => Some(inline.clone()),
-        _ => None,
+        (None, Some(inline)) => Ok(Some(inline.clone())),
+        _ => Ok(None),
     }
 }
 
-/// 构造事件总线：L1 钩子 + L2 脚本。
+/// 构造事件总线：L1 钩子 + L2 脚本。脚本编译失败返回 Err（不再静默跳过）。
 pub(crate) fn build_bus(
     manifest: &Manifest,
     silent: bool,
     selected: Vec<String>,
     script_src: Option<String>,
-) -> EventBus {
+) -> Result<EventBus, EngineError> {
     let mut bus = EventBus::new();
     if !manifest.hooks.is_empty() {
         bus.subscribe(Box::new(HookRunner::new(manifest.hooks.clone())));
@@ -229,19 +257,18 @@ pub(crate) fn build_bus(
                 .unwrap_or(30_000),
             max_operations: 10_000_000,
         };
-        match ScriptHost::new(
+        let host = ScriptHost::new(
             manifest,
             &src,
             silent,
             &selected,
             Box::new(RealHost { silent }),
             opts,
-        ) {
-            Ok(h) => bus.subscribe(Box::new(h)),
-            Err(e) => eprintln!("mo-setup: {e}"),
-        }
+        )
+        .map_err(|e| fatal(format!("脚本宿主初始化失败: {e}")))?;
+        bus.subscribe(Box::new(host));
     }
-    bus
+    Ok(bus)
 }
 
 fn read_meta(pkg: &mut Package, path: &str) -> Option<Vec<u8>> {
@@ -256,9 +283,13 @@ fn install_flow(
     args: &Args,
 ) -> Result<(), EngineError> {
     if manifest.options.require_admin && !misc::is_elevated() {
-        misc::relaunch_elevated(exe, &args.raw)
+        // 静默模式等待提权子进程并透传退出码，避免部署脚本拿到假成功。
+        let code = misc::relaunch_elevated_wait(exe, &args.raw)
             .map_err(|e| fatal(format!("需要管理员权限，重启失败: {e}")))?;
-        return Ok(());
+        return match code {
+            Some(c) if c != 0 => Err(fatal(format!("提权安装退出码: {c}"))),
+            _ => Ok(()),
+        };
     }
     let _mutex = misc::SingleInstance::new(&format!("MoInstaller.{}", manifest.app.id))
         .ok_or_else(|| fatal("安装程序已在运行"))?;
@@ -300,8 +331,8 @@ fn install_flow(
         selected_components: selected.iter().cloned().collect::<BTreeSet<_>>(),
         env,
     };
-    let script = script_source(manifest, pkg);
-    let bus = build_bus(manifest, true, selected, script);
+    let script = script_source(manifest, pkg)?;
+    let bus = build_bus(manifest, true, selected, script)?;
     let mut executor = Executor::new(bus, ctx, target.join("mo-install.log"));
     executor.install(manifest, pkg, exe)
 }
@@ -324,7 +355,7 @@ fn uninstall_flow(manifest: &Manifest, exe: &std::path::Path) -> Result<(), Engi
         selected_components: BTreeSet::new(),
         env,
     };
-    let bus = build_bus(manifest, true, Vec::new(), None);
+    let bus = build_bus(manifest, true, Vec::new(), None)?;
     let log_path = ctx.app_dir.join("mo-install.log");
     let mut executor = Executor::new(bus, ctx, log_path);
     executor.uninstall(manifest, exe)

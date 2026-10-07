@@ -144,6 +144,11 @@ impl WizardApp {
         }
     }
 
+    /// 安装/卸载工作线程运行中（取消与窗口关闭必须被拦截）。
+    fn running(&self) -> bool {
+        self.install_rx.is_some() && !self.progress.finished
+    }
+
     /// 切页并重置入场动画时钟。
     fn set_page(&mut self, p: Page) {
         self.page = p;
@@ -297,8 +302,8 @@ fn run_install_thread(
         env,
     };
     // 与静默路径一致：L1 钩子 + L2 脚本 + UI 进度
-    let script = super::script_source(&manifest, &mut pkg);
-    let mut bus = super::build_bus(&manifest, false, selected_vec, script);
+    let script = super::script_source(&manifest, &mut pkg)?;
+    let mut bus = super::build_bus(&manifest, false, selected_vec, script)?;
     bus.subscribe(Box::new(UiProgress {
         tx: tx.clone(),
         files_total: total,
@@ -399,6 +404,11 @@ pub fn run_install_gui(mut app: WizardApp) -> (bool, Option<String>) {
             if !app.uninstall_mode && !pages.contains(&app.page) {
                 app.page = pages.first().copied().unwrap_or(Page::Install);
             }
+            // 有效页面序列直接以 Install 开头时（如 pages = ["install",
+            // "finish"]），Install 页没有「下一步」可点——直接启动安装。
+            if !app.uninstall_mode && app.page == Page::Install && app.install_rx.is_none() {
+                app.start_install();
+            }
             Ok(Box::new(GuiWrap {
                 app,
                 outcome: GuiOutcome::Install(out2),
@@ -457,6 +467,16 @@ struct GuiWrap {
 impl eframe::App for GuiWrap {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.app.poll_install();
+        // 工作线程运行中持续请求重绘：egui 默认被动渲染，否则进度与
+        // 完成消息要等下一次鼠标/键盘事件才会被轮询。
+        if self.app.running() {
+            ctx.request_repaint();
+        }
+        // 运行中拦截原生窗口关闭（X），防止杀死工作线程留下半安装。
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        if close_requested && self.app.running() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         self.app.theme.apply_style(ctx);
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(Color32::WHITE))
@@ -750,19 +770,27 @@ impl WizardApp {
         let next_label_uninstall = self.theme.tr("wizard.btn.uninstall");
         match self.page {
             Page::Install if !self.uninstall_mode => {
-                if ui.add(self.theme.secondary_button(&cancel_label)).clicked() {
+                // 安装进行中禁止取消：直接退出会杀死工作线程，留下无日志的半安装。
+                if ui
+                    .add_enabled(!self.running(), self.theme.secondary_button(&cancel_label))
+                    .clicked()
+                {
                     self.closed = true;
                 }
             }
             Page::Finish => {
                 if self.uninstall_mode && self.result.is_none() {
+                    let busy = self.running();
                     if ui
-                        .add(self.theme.primary_button(&next_label_uninstall))
+                        .add_enabled(!busy, self.theme.primary_button(&next_label_uninstall))
                         .clicked()
                     {
                         self.start_uninstall();
                     }
-                    if ui.add(self.theme.secondary_button(&cancel_label)).clicked() {
+                    if ui
+                        .add_enabled(!busy, self.theme.secondary_button(&cancel_label))
+                        .clicked()
+                    {
                         self.closed = true;
                     }
                 } else {
