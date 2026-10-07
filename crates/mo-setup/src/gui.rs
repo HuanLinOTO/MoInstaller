@@ -184,9 +184,10 @@ impl WizardApp {
             .map(|(id, _)| id.clone())
             .collect();
         std::thread::spawn(move || {
-            if let Err(e) = run_install_thread(manifest, exe, target, selected, &tx) {
-                let _ = tx.send(UiMsg::Done(Err(e)));
-            }
+            // 成功与失败都必须回传 Done——此前只在 Err 时发送，安装成功后
+            // GUI 永远等不到完成消息，向导停在 finalize 页（引擎其实已完成）。
+            let r = run_install_thread(manifest, exe, target, selected, &tx);
+            let _ = tx.send(UiMsg::Done(r));
         });
     }
 
