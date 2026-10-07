@@ -39,6 +39,8 @@ pub struct ThemeRuntime {
     pub strings: BTreeMap<String, String>,
     /// 有效页面序列（显隐/顺序已应用）。
     pub pages: Vec<Page>,
+    /// 一键模式（清单 theme.minimal）：单主按钮导航 + 欢迎页内联改目录。
+    pub minimal: bool,
 }
 
 impl ThemeRuntime {
@@ -100,6 +102,7 @@ impl ThemeRuntime {
             sidebar,
             strings: manifest.theme.strings.clone(),
             pages,
+            minimal: manifest.theme.minimal,
         }
     }
 

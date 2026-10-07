@@ -79,6 +79,7 @@ pub fn builtin(key: &str, lang: Lang) -> Option<&'static str> {
         "wizard.dir.freespace" => ("可用空间", "Space available"),
         "wizard.dir.browse" => ("浏览...", "Browse..."),
         "wizard.dir.installto" => ("安装到", "Install to"),
+        "wizard.welcome.change_dir" => ("更改安装目录...", "Change install directory..."),
         "wizard.components.title" => ("选择组件", "Choose Components"),
         "wizard.components.prompt" => ("选择要安装的功能。", "Select features to install."),
         "wizard.components.size" => ("大小", "Size"),
